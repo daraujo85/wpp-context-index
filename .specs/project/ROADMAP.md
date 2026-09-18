@@ -1,7 +1,9 @@
 # Roadmap
 
-**Current Milestone:** M3 — Source resolver & hardening
-**Status:** Planning (M0+M1+M2 done, código-completo em T1-T21)
+**Current Milestone:** MVP completo — sem próximo milestone nomeado
+**Status:** M0+M1+M2+M3 done, código-completo em T1-T25. Fases 0-5 do PRD
+(§25) encerradas. Próximo trabalho só via pedido explícito do usuário
+(ver "Future Considerations" abaixo / PRD §27 "Evoluções possíveis").
 
 ---
 
@@ -75,23 +77,34 @@ Código-completo via `tasks-m2.md` T16-T21.
 
 ---
 
-## M3 — Source resolver & hardening
+## M3 — Source resolver & hardening ✅ DONE
 
 **Goal:** Resultado de busca leva à evidência original; MVP robusto pra
-uso diário (PRD Fases 4-5).
+uso diário (PRD Fases 4-5). Código-completo via `tasks-m3.md` T22-T25.
 
 ### Features
 
-**Source resolver** - PLANNED
+**Source resolver** - DONE (T22)
 
 - `GET /api/v1/source/{id}` e `GET /api/v1/source/media/{message_id}`
-  (sob demanda via WPP Bot Server, sem cache permanente)
+  (sob demanda via `wpp.get_media`, sem cache permanente — cleanup
+  garantido via `BackgroundTask` após a resposta)
+- Deliberadamente fora de escopo: `GET /api/v1/context/{id}` (PRD §13
+  o lista como "mínimo sugerido", mas não está nos critérios rastreáveis
+  do spec.md P3) — gap conhecido, não construído
 
-**Hardening** - PLANNED
+**Hardening** - DONE (T23-T25)
 
-- Retry idempotente, testes unit+integração, limites de tamanho/timeout,
-  logs estruturados sem conteúdo sensível, scheduler (cron do host, sem
-  Celery/Redis)
+- Limite de tamanho de mídia + validação de MIME (`MEDIA_MAX_SIZE_MB`,
+  `validate_mime()`, isolados via `failed_media`) — T23
+- Idempotência de reingestão comprovada também pra unidades com mídia,
+  sem mecanismo de retry novo (upsert por ID determinístico já basta) —
+  T24
+- Scheduler: `scripts/ingest-yesterday.sh` + exemplo de crontab no
+  README, sem Celery/Redis — T25
+- Timeout em subprocess, validação de resposta da skill e observabilidade
+  (`IngestionSummary`) já estavam satisfeitos por código de M1/M2 —
+  confirmado por leitura direta, sem task nova
 
 ---
 
