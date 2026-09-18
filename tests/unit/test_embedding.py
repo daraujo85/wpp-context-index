@@ -39,3 +39,21 @@ def test_embedding_text_never_includes_decision_or_relevance_fields():
     text = build_embedding_text(_guardrail())
     assert "index" not in text
     assert "0.9" not in text
+
+
+def test_embedding_text_includes_artifact_descriptions():
+    guardrail = _guardrail(
+        artifacts=[
+            {"type": "image", "description": "print de erro 500 no app"},
+            {"type": "audio", "description": "áudio confirmando vencimento"},
+        ]
+    )
+    text = build_embedding_text(guardrail)
+    assert "print de erro 500 no app" in text
+    assert "áudio confirmando vencimento" in text
+
+
+def test_embedding_text_empty_artifacts_matches_previous_output():
+    text_with_empty = build_embedding_text(_guardrail(artifacts=[]))
+    text_without_field = build_embedding_text(_guardrail())
+    assert text_with_empty == text_without_field
