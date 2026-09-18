@@ -68,3 +68,24 @@ def test_fallback_never_shares_mutable_state_between_calls():
     b = parse_guardrail_response("garbage")
     a.redactions.append("x")
     assert b.redactions == []
+
+def test_valid_artifacts_list_parses_unchanged():
+    raw = json.dumps({
+        "decision": "index",
+        "work_relevance": 0.9,
+        "contains_personal_content": False,
+        "artifacts": [
+            {"type": "image", "description": "Tela mostrando erro 500."},
+        ],
+    })
+    result = parse_guardrail_response(raw)
+    assert result.artifacts == [{"type": "image", "description": "Tela mostrando erro 500."}]
+
+def test_missing_artifacts_field_defaults_to_empty_list():
+    raw = json.dumps({
+        "decision": "index",
+        "work_relevance": 0.9,
+        "contains_personal_content": False,
+    })
+    result = parse_guardrail_response(raw)
+    assert result.artifacts == []

@@ -1,7 +1,8 @@
 """GuardrailResult: the combined Guard Rail decision + structured extraction
 (PRD §8.1 + §9), produced by ONE LLM call (T11). Fields kept to the minimal
 set T11 needs: decision/work_relevance/contains_personal_content/redactions
-(Guard Rail, §8.1) plus title/summary/kind/topics (extraction, §9).
+(Guard Rail, §8.1) plus title/summary/kind/topics (extraction, §9), plus
+artifacts (media descriptions, §9, added T18).
 
 parse_guardrail_response() turns the raw (possibly malformed) LLM JSON text
 into a GuardrailResult and NEVER raises — a malformed/unparseable response
@@ -25,6 +26,7 @@ class GuardrailResult:
     summary: str | None = None
     kind: str | None = None
     topics: list[str] = field(default_factory=list)
+    artifacts: list[dict] = field(default_factory=list)
 
 
 def _discard_fallback() -> GuardrailResult:
@@ -54,6 +56,7 @@ def parse_guardrail_response(raw_text: str) -> GuardrailResult:
             summary=data.get("summary"),
             kind=data.get("kind"),
             topics=list(data.get("topics") or []),
+            artifacts=list(data.get("artifacts") or []),
         )
     except (json.JSONDecodeError, ValueError, TypeError):
         return _discard_fallback()

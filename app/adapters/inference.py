@@ -43,7 +43,11 @@ Responda apenas com um objeto JSON com exatamente estas chaves:
   "title": título curto (string, ou null se decision="discard"),
   "summary": resumo objetivo (string, ou null se decision="discard"),
   "kind": categoria curta como "bug", "decisao", "artifact" (ou null),
-  "topics": lista de palavras-chave (pode ser vazia)
+  "topics": lista de palavras-chave (pode ser vazia),
+  "artifacts": lista de objetos {{"type": "image"|"audio"|"video", "description": "..."}}
+    — preencha somente se a unidade de conversa abaixo contiver uma descrição de
+    imagem/print ou uma transcrição de áudio/vídeo (ex.: linhas marcadas como
+    "[imagem]", "[audio]", "[video]"); senão deixe []
 }}
 
 Unidade de conversa:

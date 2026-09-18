@@ -19,3 +19,15 @@ def test_classify_and_extract_real_call_returns_valid_guardrail_result():
     assert isinstance(result.contains_personal_content, bool)
     assert isinstance(result.redactions, list)
     assert isinstance(result.topics, list)
+    assert isinstance(result.artifacts, list)
+
+def test_classify_and_extract_real_call_with_media_line_parses_artifacts():
+    # Best-effort per T18: a local 8B model may not always populate
+    # "artifacts" correctly — assert it parses without crashing, not exact content.
+    unit_text = (
+        "Bug reportado no grupo Operacao.\n"
+        "[imagem] tela mostrando erro 500 ao salvar vencimento no painel de cobranca."
+    )
+    result = classify_and_extract(unit_text)
+    assert isinstance(result, GuardrailResult)
+    assert isinstance(result.artifacts, list)
