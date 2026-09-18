@@ -1,0 +1,13 @@
+.git/
+tests/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+graphify-out/
+.grepai/
+.specs/
+docs/
