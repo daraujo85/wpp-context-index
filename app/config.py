@@ -66,6 +66,9 @@ class Settings:
             "EMBEDDING_MODEL", "mxbai-embed-large"
         )
     )
+    text_model: str = field(
+        default_factory=lambda: os.environ.get("TEXT_MODEL", "qwen3:8b")
+    )
     ollama_base_url: str = field(
         default_factory=lambda: os.environ.get(
             "OLLAMA_BASE_URL", "http://192.168.31.231:11434"
