@@ -13,11 +13,13 @@ never message bodies (PRD "never log personal content/secrets").
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
 
-from app.adapters import inference, qdrant, wpp
+from app.adapters import inference, qdrant, transcription, wpp
 from app.config import Settings
 from app.domain.contexts import ContextUnit
 from app.domain.messages import MessageEnvelope, normalize, redact, should_discard
@@ -39,14 +41,73 @@ class IngestionSummary:
     errors: int = 0
     duration_seconds: float = 0.0
 
-def _unit_text(unit: ContextUnit, messages_by_id: dict[str, MessageEnvelope]) -> str:
+_ARTIFACT_TAG = {"image": "[imagem]", "audio": "[audio]", "video": "[video]"}
+
+def _unit_text(
+    unit: ContextUnit,
+    messages_by_id: dict[str, MessageEnvelope],
+    artifacts: list[dict] | None = None,
+) -> str:
     bodies = []
     for message_id in unit.message_ids:
         msg = messages_by_id.get(message_id)
         if msg and msg.body:
             redacted_body, _ = redact(msg.body)
             bodies.append(redacted_body)
+    for artifact in artifacts or []:
+        tag = _ARTIFACT_TAG.get(artifact.get("type"), "[midia]")
+        bodies.append(f"{tag} {artifact['description']}")
     return "\n".join(bodies)
+
+def _process_media(
+    unit: ContextUnit,
+    messages_by_id: dict[str, MessageEnvelope],
+    summary: IngestionSummary,
+) -> tuple[list[dict], list[dict]]:
+    """Downloads/describes/transcribes every media message in `unit`,
+    sequentially (PRD §17.2 MEDIA_CONCURRENCY=1). Returns (artifacts, media)
+    for `_unit_text`/`build_payload`. Raises on any adapter error — caller
+    marks the whole unit `failed_media`. `document` messages are skipped
+    entirely: no download, no adapter call (PRD §6.3).
+    """
+    artifacts: list[dict] = []
+    media: list[dict] = []
+    for message_id in unit.message_ids:
+        msg = messages_by_id.get(message_id)
+        if not msg or not msg.has_media or msg.type == "document":
+            continue
+
+        media_path: str | None = None
+        frames_dir: str | None = None
+        try:
+            media_path, _mime, _size = wpp.get_media(message_id)
+            if msg.type == "image":
+                description = inference.describe_image(media_path)
+                artifacts.append({"type": "image", "description": description})
+                media.append({"message_id": message_id, "type": "image", "description": description})
+                summary.images_processed += 1
+            elif msg.type == "audio":
+                result = transcription.transcribe(media_path, media_type="audio")
+                artifacts.append({"type": "audio", "description": result.text})
+                media.append({"message_id": message_id, "type": "audio", "description": result.text})
+                summary.audio_processed += 1
+            elif msg.type == "video":
+                result = transcription.transcribe(media_path, media_type="video")
+                frames_dir = result.frames_dir
+                for frame_path in result.frame_paths:
+                    frame_description = inference.describe_image(frame_path)
+                    artifacts.append({"type": "video", "description": frame_description})
+                    media.append({"message_id": message_id, "type": "video", "description": frame_description})
+                summary.videos_processed += 1
+        finally:
+            if media_path:
+                try:
+                    os.remove(media_path)
+                except OSError:
+                    pass
+            if frames_dir:
+                shutil.rmtree(frames_dir, ignore_errors=True)
+    return artifacts, media
 
 def run(
     start: str,
@@ -94,7 +155,14 @@ def run(
 
         for unit in units:
             try:
-                guardrail = inference.classify_and_extract(_unit_text(unit, messages_by_id))
+                artifacts, media = _process_media(unit, messages_by_id, summary)
+            except Exception:
+                logger.warning("unit %s status=failed_media", unit.id)
+                summary.errors += 1
+                continue
+
+            try:
+                guardrail = inference.classify_and_extract(_unit_text(unit, messages_by_id, artifacts))
             except Exception:
                 logger.warning("unit %s status=failed_guardrail", unit.id)
                 summary.errors += 1
@@ -110,6 +178,7 @@ def run(
                 qdrant.upsert(
                     unit, guardrail, vector,
                     collection_name=collection_name, client=qdrant_client,
+                    media=media,
                 )
             except Exception:
                 logger.warning("unit %s status=failed_embedding_or_index", unit.id)

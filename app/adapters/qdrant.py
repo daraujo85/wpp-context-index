@@ -59,6 +59,7 @@ def upsert(
     vector: list[float],
     collection_name: str = "wpp_context",
     client: QdrantClient | None = None,
+    media: list[dict] | None = None,
 ) -> None:
     client = client or QdrantClient(url=Settings().qdrant_url)
     client.upsert(
@@ -66,6 +67,6 @@ def upsert(
         points=[{
             "id": point_id(unit),
             "vector": vector,
-            "payload": build_payload(unit, guardrail),
+            "payload": build_payload(unit, guardrail, media=media),
         }],
     )
