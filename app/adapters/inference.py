@@ -66,3 +66,23 @@ def classify_and_extract(
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise InferenceError(f"Ollama call failed: {exc}") from exc
     return parse_guardrail_response(body.get("response", ""))
+
+
+def embed(text: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> list[float]:
+    settings = Settings()
+    payload = json.dumps({
+        "model": settings.embedding_model,
+        "prompt": text,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        f"{settings.ollama_base_url}/api/embeddings",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as resp:
+            body = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise InferenceError(f"Ollama call failed: {exc}") from exc
+    return body.get("embedding", [])
