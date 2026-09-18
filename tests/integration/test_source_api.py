@@ -22,7 +22,7 @@ from app.domain.guardrail import GuardrailResult
 from app.main import app
 
 _COLLECTION = "wpp_context"
-_VECTOR_SIZE = 1024
+_VECTOR_SIZE = 768  # nomic-embed-text dimension (was 1024 for mxbai-embed-large)
 
 client = TestClient(app)
 

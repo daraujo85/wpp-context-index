@@ -63,7 +63,7 @@ class Settings:
     )
     embedding_model: str = field(
         default_factory=lambda: os.environ.get(
-            "EMBEDDING_MODEL", "mxbai-embed-large"
+            "EMBEDDING_MODEL", "nomic-embed-text"
         )
     )
     text_model: str = field(
@@ -71,7 +71,7 @@ class Settings:
     )
     ollama_base_url: str = field(
         default_factory=lambda: os.environ.get(
-            "OLLAMA_BASE_URL", "http://192.168.31.231:11434"
+            "OLLAMA_BASE_URL", "http://localhost:11434"
         )
     )
     qdrant_url: str = field(

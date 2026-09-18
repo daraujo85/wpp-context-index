@@ -44,7 +44,7 @@ Código-completo via `tasks.md` T8-T15 (commits `d9ee658`..`94adaeb`).
 - Normalização, pré-filtro determinístico, agrupamento por
   chat+janela+reply
 - Guard Rail (1 chamada LLM local) + extração estruturada
-- Embedding (`mxbai-embed-large`) + upsert idempotente no Qdrant
+- Embedding (`nomic-embed-text`) + upsert idempotente no Qdrant
 
 **Busca** - DONE (T14-T15)
 

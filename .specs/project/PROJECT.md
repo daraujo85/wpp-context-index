@@ -31,8 +31,10 @@ se perde em conversas de WhatsApp; não há busca semântica sobre isso hoje.
 **Key dependencies:**
 
 - `qdrant-client` — vetores/payload/filtros
-- Ollama (HTTP, local, `192.168.31.231:11434`) — embedding
-  (`mxbai-embed-large`) e visão (`gemma4:12b`), modelos já existentes,
+- Ollama (HTTP, local, `localhost:11434` do host — `host.docker.internal:11434`
+  quando o serviço roda dentro do container `wpp-context`, ver
+  `docker-compose.yml`) — embedding
+  (`nomic-embed-text`) e visão (`gemma4:12b`), modelos já existentes,
   configuráveis via `.env`
 - skill `whatsapp-message` (`wpp.sh`, subprocess) — leitura de
   chats/mensagens/mídia do WPP Bot Server

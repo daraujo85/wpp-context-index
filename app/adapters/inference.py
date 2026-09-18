@@ -15,7 +15,7 @@ from pathlib import Path
 from app.config import Settings
 from app.domain.guardrail import GuardrailResult, parse_guardrail_response
 
-DEFAULT_TIMEOUT_SECONDS = 120
+DEFAULT_TIMEOUT_SECONDS = 400  # gemma4:12b cold load measured ~285s on this local Ollama
 
 _VISION_PROMPT = """Descreva esta imagem de forma objetiva, para indexação e busca
 em um índice corporativo. Não faça descrição artística. Foque em:

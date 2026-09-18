@@ -5,8 +5,8 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       - VISION_MODEL=${VISION_MODEL:-gemma4:12b}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-mxbai-embed-large}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://192.168.31.231:11434}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
       - INGEST_CONCURRENCY=${INGEST_CONCURRENCY:-1}
       - MEDIA_CONCURRENCY=${MEDIA_CONCURRENCY:-1}

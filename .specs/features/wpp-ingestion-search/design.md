@@ -10,7 +10,7 @@ Refs: `spec.md` (este diretório), `docs/PRD.md`, decisões registradas em
 | Chats/histórico/mídia | skill `whatsapp-message` (`wpp.sh`) | subprocess. **Gap**: sem leitura por `startDate`/`endDate` num chat arbitrário — estender com `history <target> --start --end` sobre `getAllMessagesByContactId` |
 | Transcrição áudio/vídeo + frames | skill `transcribe-audio-video` (`transcribe_audio.py --frames --format json`) | subprocess |
 | Descrição de imagem/frame | **não existe pronto** (a skill deixa a descrição pro agente ler na conversa; `azap-image` usa Gemini, proibido) | chamada direta HTTP a Ollama vision (`gemma4:12b`) |
-| Embedding | Ollama (`mxbai-embed-large`, já baixado) | HTTP local |
+| Embedding | Ollama (`nomic-embed-text`, já baixado) | HTTP local |
 | Vector store | Qdrant dedicado local (docker-compose) | `qdrant-client` |
 | Allowlist de fontes | `~/.claude/secrets/whatsapp.env` + `whatsapp-lids.json` | leitura direta em `config.py`, sem duplicar |
 
@@ -83,7 +83,7 @@ flowchart LR
 ## Busca
 
 ```
-query -> embedding local (mxbai-embed-large) -> Qdrant (dense + filtro payload)
+query -> embedding local (nomic-embed-text) -> Qdrant (dense + filtro payload)
       -> se query bate padrão de identificador exato (URL/ticket/hash/endpoint)
          -> boost de match lexical em topics/title/urls
       -> resultados (score, evidência, source_url)
@@ -104,8 +104,8 @@ se necessário, com cleanup garantido).
 
 ```env
 VISION_MODEL=gemma4:12b
-EMBEDDING_MODEL=mxbai-embed-large
-OLLAMA_BASE_URL=http://192.168.31.231:11434
+EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_BASE_URL=http://host.docker.internal:11434  # localhost from INSIDE the container is wrong; host-run code (pytest/cron) overrides to localhost
 INGEST_CONCURRENCY=1
 MEDIA_CONCURRENCY=1
 CONVERSATION_GAP_MINUTES=20

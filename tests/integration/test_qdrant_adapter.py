@@ -18,7 +18,7 @@ from app.domain.contexts import ContextUnit, deterministic_id
 from app.domain.guardrail import GuardrailResult
 
 _COLLECTION = "wpp_context_test_t12"
-_VECTOR_SIZE = 1024  # confirmed against real mxbai-embed-large response
+_VECTOR_SIZE = 768  # nomic-embed-text dimension (was 1024 for mxbai-embed-large)
 
 
 @pytest.fixture

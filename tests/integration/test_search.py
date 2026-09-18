@@ -19,7 +19,7 @@ from app.domain.guardrail import GuardrailResult
 from app.services.search import search
 
 _COLLECTION = "wpp_context_test_t14"
-_VECTOR_SIZE = 1024
+_VECTOR_SIZE = 768  # nomic-embed-text dimension (was 1024 for mxbai-embed-large)
 
 
 @pytest.fixture
