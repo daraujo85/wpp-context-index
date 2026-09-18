@@ -9,12 +9,12 @@ ContextUnit.id -> same UUID every time) and Qdrant accepts it — this is what
 makes upsert() idempotent (same point ID overwrites, never duplicates).
 
 SPEC_DEVIATION: PRD §10.2's payload also lists chat.name/is_group, senders,
-source.first_timestamp/last_timestamp, media, urls, ticket_ids,
-guardrail.version and extractor_version. None of those are available on
-T9's ContextUnit or T11's GuardrailResult (both deliberately scoped
-narrower than the full PRD payload), so the payload here is limited to the
-fields actually available: schema_version, company, kind, title, summary,
-topics, chat.id, source.message_ids.
+source.first_timestamp/last_timestamp, urls, ticket_ids, guardrail.version
+and extractor_version. None of those are available on T9's ContextUnit or
+T11's GuardrailResult (both deliberately scoped narrower than the full PRD
+payload), so the payload here is limited to the fields actually available:
+schema_version, company, kind, title, summary, topics, chat.id,
+source.message_ids, plus the optional media (T20) list when passed in.
 """
 from __future__ import annotations
 
@@ -33,8 +33,12 @@ def point_id(unit: ContextUnit) -> str:
     return str(uuid.UUID(unit.id[:32]))
 
 
-def build_payload(unit: ContextUnit, guardrail: GuardrailResult) -> dict:
-    return {
+def build_payload(
+    unit: ContextUnit,
+    guardrail: GuardrailResult,
+    media: list[dict] | None = None,
+) -> dict:
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "company": unit.company,
         "kind": guardrail.kind,
@@ -44,6 +48,9 @@ def build_payload(unit: ContextUnit, guardrail: GuardrailResult) -> dict:
         "chat": {"id": unit.chat_id},
         "source": {"message_ids": unit.message_ids},
     }
+    if media:
+        payload["media"] = media
+    return payload
 
 
 def upsert(
