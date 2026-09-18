@@ -56,6 +56,26 @@ def test_subprocess_timeout_is_configurable():
     assert run.call_args.kwargs["timeout"] == 5
 
 
+def test_get_media_raises_when_size_exceeds_configured_limit(monkeypatch):
+    monkeypatch.setenv("MEDIA_MAX_SIZE_MB", "1")  # 1MB limit for the test
+    with patch(
+        "app.adapters.wpp.subprocess.run",
+        return_value=_completed("/tmp/wpp-media-big.jpg\timage/jpeg\t2097152 bytes\n"),  # 2MB
+    ):
+        with pytest.raises(wpp.WppMediaTooLargeError):
+            wpp.get_media("true_120363...@g.us_TOOBIG")
+
+
+def test_get_media_within_limit_does_not_raise(monkeypatch):
+    monkeypatch.setenv("MEDIA_MAX_SIZE_MB", "1")
+    with patch(
+        "app.adapters.wpp.subprocess.run",
+        return_value=_completed("/tmp/wpp-media-ok.jpg\timage/jpeg\t1024 bytes\n"),
+    ):
+        path, mime, size = wpp.get_media("true_120363...@g.us_OK")
+    assert (path, mime, size) == ("/tmp/wpp-media-ok.jpg", "image/jpeg", 1024)
+
+
 def test_chats_strips_trailing_http_code_line():
     with patch(
         "app.adapters.wpp.subprocess.run",

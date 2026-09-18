@@ -115,6 +115,16 @@ _SECRET_PATTERNS = [
 ]
 
 
+def validate_mime(declared_type: str, mime: str) -> bool:
+    """True when `mime`'s prefix (image/audio/video) matches the message's
+    declared `type` (PRD §21 MIME validation). Types without a MIME family
+    (document, etc.) are not checked here — always True."""
+    prefix = {"image": "image/", "audio": "audio/", "video": "video/"}.get(declared_type)
+    if prefix is None:
+        return True
+    return mime.startswith(prefix)
+
+
 def redact(text: str) -> tuple[str, bool]:
     found_secrets = False
 

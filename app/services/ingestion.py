@@ -22,7 +22,13 @@ from dataclasses import dataclass
 from app.adapters import inference, qdrant, transcription, wpp
 from app.config import Settings
 from app.domain.contexts import ContextUnit
-from app.domain.messages import MessageEnvelope, normalize, redact, should_discard
+from app.domain.messages import (
+    MessageEnvelope,
+    normalize,
+    redact,
+    should_discard,
+    validate_mime,
+)
 from app.services.embedding import build_embedding_text
 from app.services.grouping import group
 
@@ -80,7 +86,12 @@ def _process_media(
         media_path: str | None = None
         frames_dir: str | None = None
         try:
-            media_path, _mime, _size = wpp.get_media(message_id)
+            media_path, mime, _size = wpp.get_media(message_id)
+            if not validate_mime(msg.type, mime):
+                raise ValueError(
+                    f"message {message_id}: declared type={msg.type!r} "
+                    f"does not match reported mime={mime!r}"
+                )
             if msg.type == "image":
                 description = inference.describe_image(media_path)
                 artifacts.append({"type": "image", "description": description})

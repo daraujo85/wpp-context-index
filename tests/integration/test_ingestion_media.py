@@ -241,3 +241,34 @@ def test_media_adapter_failure_marks_unit_failed_media_and_batch_continues(clien
     assert summary.contexts_indexed == 1  # ok@c.us unit still processed
     assert client.count(_COLLECTION).count == 1
     assert not ok_image_path.exists()
+
+
+def test_mime_mismatch_marks_unit_failed_media(client, monkeypatch, tmp_media_dir):
+    # declared type=image but wpp.get_media reports audio/ogg mime -> T23
+    # validate_mime() must catch this before describe_image() is called.
+    media_path = tmp_media_dir / "mismatch.bin"
+    media_path.write_bytes(b"fake-bytes")
+
+    history_by_jid = {
+        "mismatch@c.us": [_raw("mismatch_1", "a@c.us", 1_700_000_000, None, msg_type="image")],
+    }
+
+    def _tracked_describe(p, timeout_seconds=120):
+        raise AssertionError("describe_image must not be called on a mime mismatch")
+
+    monkeypatch.setattr(wpp_module, "history", lambda t, s, e, timeout_seconds=30: history_by_jid.get(t, []))
+    monkeypatch.setattr(wpp_module, "get_media", lambda mid, timeout_seconds=30: (str(media_path), "audio/ogg", 10))
+    monkeypatch.setattr(inference_module, "describe_image", _tracked_describe)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _fake_classify_and_extract_index)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+
+    summary = run(
+        "2026-01-01T00:00:00", "2026-01-02T00:00:00",
+        settings=_fake_settings([{"alias": "mismatch", "jid": "mismatch@c.us", "is_group": False}]),
+        collection_name=_COLLECTION, qdrant_client=client,
+    )
+
+    assert summary.errors == 1
+    assert summary.contexts_indexed == 0
+    assert summary.images_processed == 0
+    assert client.count(_COLLECTION).count == 0

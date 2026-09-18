@@ -4,7 +4,13 @@ optional quotedMsgId), per T2/T3's confirmed live shape.
 """
 from __future__ import annotations
 
-from app.domain.messages import MessageEnvelope, normalize, redact, should_discard
+from app.domain.messages import (
+    MessageEnvelope,
+    normalize,
+    redact,
+    should_discard,
+    validate_mime,
+)
 
 _CTX = dict(company="camila", chat_id="camila@c.us", chat_name="Camila", is_group=False)
 
@@ -185,3 +191,23 @@ def test_redact_otp_code():
     redacted, found = redact("seu codigo de verificacao e 482913, nao compartilhe")
     assert found is True
     assert "482913" not in redacted
+
+
+# --- validate_mime (T23, PRD §21) ------------------------------------------
+
+
+def test_validate_mime_matching_pairs():
+    assert validate_mime("image", "image/png") is True
+    assert validate_mime("audio", "audio/ogg") is True
+    assert validate_mime("video", "video/mp4") is True
+
+
+def test_validate_mime_mismatched_pairs():
+    assert validate_mime("image", "audio/ogg") is False
+    assert validate_mime("audio", "image/png") is False
+    assert validate_mime("video", "application/octet-stream") is False
+
+
+def test_validate_mime_unchecked_type_always_true():
+    # document/other non-media-family types have no MIME family to check.
+    assert validate_mime("document", "application/pdf") is True

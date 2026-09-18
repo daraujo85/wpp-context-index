@@ -90,6 +90,9 @@ class Settings:
             os.environ.get("CONVERSATION_GAP_MINUTES", "20")
         )
     )
+    media_max_size_mb: int = field(
+        default_factory=lambda: int(os.environ.get("MEDIA_MAX_SIZE_MB", "25"))
+    )
 
     def sources(self) -> list[dict]:
         """Allowlisted WhatsApp sources from whatsapp.env: WPP_CONTACT_* (DMs)
