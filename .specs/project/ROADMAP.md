@@ -1,7 +1,7 @@
 # Roadmap
 
-**Current Milestone:** M2 — Multimodal
-**Status:** Planning (M0+M1 done, código-completo em T1-T15)
+**Current Milestone:** M3 — Source resolver & hardening
+**Status:** Planning (M0+M1+M2 done, código-completo em T1-T21)
 
 ---
 
@@ -51,20 +51,27 @@ Código-completo via `tasks.md` T8-T15 (commits `d9ee658`..`94adaeb`).
 
 ---
 
-## M2 — Multimodal
+## M2 — Multimodal ✅ DONE
 
 **Goal:** Encontrar imagem/áudio/vídeo através de texto (PRD Fase 3).
+Código-completo via `tasks-m2.md` T16-T21.
 
 ### Features
 
-**Imagem** - PLANNED
+**Imagem** - DONE (T16)
 
 - Descrição via Ollama vision (`gemma4:12b`) direto no pipeline batch
 
-**Áudio/vídeo** - PLANNED
+**Áudio/vídeo** - DONE (T17)
 
 - Reuso de `transcribe-audio-video` (subprocess `--frames --format json`)
-- Cleanup garantido de mídia temporária
+- Cleanup garantido de mídia temporária (T21)
+
+**Pipeline fim-a-fim** - DONE (T18-T21)
+
+- Guard Rail extraí `artifacts`, embedding inclui descrições, payload
+  Qdrant ganha `media[]`, `ingestion.py` processa imagem/áudio/vídeo por
+  unidade com status `failed_media` isolado por unidade
 
 ---
 
