@@ -17,6 +17,16 @@ mensagens por HTTP). `app/adapters/wpp.py` só faz `subprocess` sobre o
 gateway WPPConnect (ou compatível) rodando e acessível, a ingestão não
 tem o que ler.
 
+## Como isso conversa com os modelos
+
+Embeddings vão direto pro Ollama local (`WPP_OLLAMA_URL`). Extração de
+texto e descrição de imagem passam por um gateway
+[9router](https://github.com/decolua/9router) local (`NINE_ROUTER_URL`,
+combo `NINE_ROUTER_COMBO`) — ele escolhe/roteia entre modelos locais e
+gratuitos com fallback automático, então nenhuma chamada de texto/visão
+depende de uma única API paga fixa. `app/adapters/inference.py` cobre os
+dois casos.
+
 ## Setup
 
 ```bash
@@ -27,7 +37,9 @@ docker compose up -d
 Pré-requisitos externos a este repo:
 - Um gateway WPPConnect com sessão do WhatsApp autenticada, acessível
   via o wrapper de `wpp.sh` referenciado em `app/adapters/wpp.py`.
-- Ollama local com os modelos de `EMBEDDING_MODEL`/`VISION_MODEL`/`TEXT_MODEL`.
+- Ollama local com o modelo de `EMBEDDING_MODEL`.
+- Um gateway [9router](https://github.com/decolua/9router) local
+  (`NINE_ROUTER_URL`) com um combo configurado para `VISION_MODEL`/`TEXT_MODEL`.
 - Allowlist de contatos/grupos em `WHATSAPP_ENV_PATH`/`WHATSAPP_LIDS_PATH`
   (arquivos locais, fora do controle de versão — ver `.env.example`).
 
