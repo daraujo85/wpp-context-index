@@ -27,6 +27,30 @@ gratuitos com fallback automático, então nenhuma chamada de texto/visão
 depende de uma única API paga fixa. `app/adapters/inference.py` cobre os
 dois casos.
 
+## Fluxo
+
+```mermaid
+flowchart LR
+    subgraph Fontes
+        WA["WhatsApp\n(WPPConnect gateway)"]
+    end
+    subgraph Ingestão
+        WA -->|wpp.sh history| N[normaliza + pré-filtro]
+        N --> G[agrupa por chat + janela]
+        G -->|tem mídia| M["baixa mídia\n(get-media)"]
+        M --> D["transcreve/descreve\n(Whisper local / 9router visão)"]
+        D --> E
+        G -->|só texto| E["extração + guard rail\n(9router texto)"]
+        E -->|descartada| X[(nada persiste)]
+        E -->|relevante| EMB["embedding\n(Ollama local)"]
+        EMB --> Q[(Qdrant)]
+    end
+    subgraph Busca
+        QRY["query"] --> EMB2["embedding\n(Ollama local)"] --> Q
+        Q --> R["resultados\n(score + source_url)"]
+    end
+```
+
 ## Setup
 
 ```bash
