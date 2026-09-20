@@ -47,7 +47,10 @@ def tmp_media_dir(tmp_path):
 
 
 def _fake_settings(sources):
-    return SimpleNamespace(sources=lambda: sources, conversation_gap_minutes=20)
+    state_path = Path(tempfile.mkdtemp()) / "ingested.json"
+    return SimpleNamespace(
+        sources=lambda: sources, conversation_gap_minutes=20, ingestion_state_path=state_path
+    )
 
 
 def _fake_embed(text, timeout_seconds=120):
@@ -329,7 +332,7 @@ def test_reingest_same_period_all_media_unit_produces_one_point(client, monkeypa
     summary2 = run("2026-01-01T00:00:00", "2026-01-02T00:00:00", **kwargs)
 
     assert summary2.errors == 0
-    assert summary2.contexts_indexed == 1
+    assert summary2.contexts_indexed == 0  # source already fully done -> skipped, not reprocessed
     points_after_run2 = client.scroll(_COLLECTION, with_payload=True, limit=10)[0]
     assert len(points_after_run2) == 1  # not two -> same point ID overwrote
     assert points_after_run2[0].id == points_after_run1[0].id

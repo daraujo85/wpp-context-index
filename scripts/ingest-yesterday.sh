@@ -26,7 +26,7 @@ END="${INGEST_END:-$(date +%F)}"
 # defaults in .env/docker-compose.yml (host.docker.internal:11434,
 # qdrant:6333, neither of which resolve from bare host). Exported vars win
 # over .env (config.py uses os.environ.setdefault).
-export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://localhost:11434}"
+export WPP_OLLAMA_URL="${WPP_OLLAMA_URL:-http://localhost:11434}"
 export QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:6333}"
 
 # shellcheck disable=SC2086 # WPP_CONTEXT_CMD is intentionally word-split

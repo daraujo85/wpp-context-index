@@ -14,6 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.config import Settings
 from app.services.search import search
 
 router = APIRouter()
@@ -28,6 +29,7 @@ class SearchRequest(BaseModel):
 @router.post("/api/v1/search")
 def search_endpoint(request: SearchRequest) -> dict:
     results = search(request.query, filters=request.filters, limit=request.limit)
+    settings = Settings()
     return {
         "query": request.query,
         "results": [
@@ -37,7 +39,7 @@ def search_endpoint(request: SearchRequest) -> dict:
                 "title": r.title,
                 "summary": r.summary,
                 "kind": None,
-                "chat_name": None,
+                "chat_name": settings.chat_name(r.chat_id) if r.chat_id else None,
                 "senders": [],
                 "first_timestamp": None,
                 "source_message_ids": [],

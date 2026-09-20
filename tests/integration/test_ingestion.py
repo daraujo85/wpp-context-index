@@ -7,6 +7,8 @@ texto misto (partially-extracted, still indexed), chat vazio (0 messages).
 """
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -70,7 +72,12 @@ def _fake_embed(text, timeout_seconds=120):
     return [0.1] * _VECTOR_SIZE
 
 def _fake_settings(sources):
-    return SimpleNamespace(sources=lambda: sources, conversation_gap_minutes=20)
+    # fresh tmp state path per call -> tests never see each other's
+    # already-done markers (isolation, no explicit tmp_path threading needed)
+    state_path = Path(tempfile.mkdtemp()) / "ingested.json"
+    return SimpleNamespace(
+        sources=lambda: sources, conversation_gap_minutes=20, ingestion_state_path=state_path
+    )
 
 _ALL_SOURCES = [
     {"alias": "relevante", "jid": "relevante@c.us", "is_group": False},
@@ -116,6 +123,37 @@ def test_reingesting_same_range_does_not_duplicate_points(client, monkeypatch):
     run("2026-01-01T00:00:00", "2026-01-02T00:00:00", **kwargs)
 
     assert client.count(_COLLECTION).count == 2
+
+def test_rerunning_same_range_skips_already_done_sources(client, monkeypatch):
+    """The user's exact complaint: rerun ingest for a date range already
+    processed, and sources fully done in that range (Pedro, Camila...) must
+    not be re-fetched/re-classified/re-embedded — only new/incomplete ones
+    should do any work."""
+    history_calls = []
+
+    def _tracked_history(target, s, e, timeout_seconds=30):
+        history_calls.append(target)
+        return _fake_history(target, s, e)
+
+    monkeypatch.setattr(wpp_module, "history", _tracked_history)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _fake_classify_and_extract)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+
+    settings = _fake_settings(_ALL_SOURCES)
+    kwargs = dict(settings=settings, collection_name=_COLLECTION, qdrant_client=client)
+
+    run("2026-01-01T00:00:00", "2026-01-02T00:00:00", **kwargs)
+    assert len(history_calls) == len(_ALL_SOURCES)  # first run: everyone fetched
+
+    history_calls.clear()
+    summary = run("2026-01-01T00:00:00", "2026-01-02T00:00:00", **kwargs)
+    assert history_calls == []  # second run, same range: nobody re-fetched
+    assert summary.messages_read == 0
+    assert summary.contexts_indexed == 0
+
+    # a different range for the same sources is untouched by the state file
+    run("2026-01-02T00:00:00", "2026-01-03T00:00:00", **kwargs)
+    assert len(history_calls) == len(_ALL_SOURCES)
 
 def test_source_with_no_messages_makes_no_calls_beyond_history(client, monkeypatch):
     calls = {"classify_and_extract": 0, "embed": 0}
@@ -163,3 +201,32 @@ def test_unit_error_is_isolated_and_batch_continues(client, monkeypatch):
     assert summary.guardrail_discarded == 1  # pessoal still processed
     assert summary.contexts_indexed == 1  # misto still processed
     assert client.count(_COLLECTION).count == 1
+
+def test_on_progress_fires_start_and_done_once_per_source_in_order(client, monkeypatch):
+    monkeypatch.setattr(wpp_module, "history", _fake_history)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _fake_classify_and_extract)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+
+    events = []
+    run(
+        "2026-01-01T00:00:00", "2026-01-02T00:00:00",
+        settings=_fake_settings(_ALL_SOURCES),
+        collection_name=_COLLECTION, qdrant_client=client,
+        on_progress=lambda phase, i, t, src, s: events.append((phase, i, t, src["alias"])),
+    )
+
+    # "dead chicken" ordering: lightest sources (fewest messages) first —
+    # vazio(0), pessoal(1), relevante(2), misto(2, tie broken by original order)
+    expected_order = ["vazio", "pessoal", "relevante", "misto"]
+
+    per_source = [e for e in events if e[0] in ("start", "done")]
+    assert len(per_source) == 2 * len(_ALL_SOURCES)  # start+done per source
+    for (phase, i, t, alias), alias_expected in zip(per_source[0::2], expected_order):
+        assert phase == "start" and t == len(_ALL_SOURCES) and alias == alias_expected
+    for (phase, i, t, alias), alias_expected in zip(per_source[1::2], expected_order):
+        assert phase == "done" and alias == alias_expected
+
+    # per-unit stream events also fired, source/phase only — never message content
+    assert ("guardrail_discard", 2, 4, "pessoal") in events  # pessoal's unit discarded
+    assert ("indexed", 3, 4, "relevante") in events
+    assert ("indexed", 4, 4, "misto") in events

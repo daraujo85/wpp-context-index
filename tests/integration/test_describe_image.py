@@ -1,5 +1,5 @@
 """Integration test for app.adapters.inference.describe_image — ONE real
-call to the local Ollama vision model (T16's gate). Builds a synthetic
+call to the 9router vision combo (T16's gate). Builds a synthetic
 screenshot-like PNG in the test itself (never a real user screenshot),
 per PRD §23.
 Run directly: pytest tests/integration/test_describe_image.py -q
@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from PIL import Image, ImageDraw
 
+from app.adapters import inference
 from app.adapters.inference import InferenceError, describe_image
 
 
@@ -36,7 +37,9 @@ def test_describe_image_real_call_returns_nonempty_description(tmp_path):
 def test_describe_image_raises_inference_error_when_unreachable(monkeypatch, tmp_path):
     image_path = tmp_path / "synthetic_error.png"
     _synthetic_error_screenshot(str(image_path))
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1")
+    # _NINE_ROUTER_URL is read once at import time, so point the module
+    # attribute itself at an unreachable address (env var alone is too late).
+    monkeypatch.setattr(inference, "_NINE_ROUTER_URL", "http://127.0.0.1:1")
 
     with pytest.raises(InferenceError):
         describe_image(str(image_path), timeout_seconds=3)

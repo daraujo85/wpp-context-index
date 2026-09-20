@@ -4,7 +4,7 @@ ingest/search delegate to services.ingestion.run()/services.search.search()
 adapter mocking. inspect/source stay stubs (M3 scope)."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -24,7 +24,10 @@ def test_ingest_parses_dates_and_prints_summary(capsys):
     assert "2024-01-01" in out
     assert "2024-01-31" in out
     assert "run-1" in out
-    mock_run.assert_called_once_with("2024-01-01T00:00:00", "2024-01-31T00:00:00")
+    # on_progress: the live TUI callback wired in main() — identity doesn't matter here
+    mock_run.assert_called_once_with(
+        "2024-01-01T00:00:00", "2024-01-31T00:00:00", on_progress=ANY
+    )
 
 
 def test_ingest_rejects_bad_date(capsys):

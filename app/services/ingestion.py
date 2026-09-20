@@ -12,12 +12,14 @@ never message bodies (PRD "never log personal content/secrets").
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.adapters import inference, qdrant, transcription, wpp
 from app.config import Settings
@@ -48,6 +50,22 @@ class IngestionSummary:
     duration_seconds: float = 0.0
 
 _ARTIFACT_TAG = {"image": "[imagem]", "audio": "[audio]", "video": "[video]"}
+
+def _load_done(path: Path) -> set[tuple[str, str, str]]:
+    """(alias, start, end) tuples already fully processed by a prior run() —
+    lets a rerun over the same range skip sources it already did instead of
+    re-reading/re-transcribing/re-classifying them (costly: LLM+embedding
+    calls per unit). Keyed by exact range, not idempotency of the Qdrant
+    write (that was already guaranteed) — this is purely to skip *work*."""
+    if not path.exists():
+        return set()
+    return {tuple(item) for item in json.loads(path.read_text())}
+
+def _mark_done(path: Path, key: tuple[str, str, str]) -> None:
+    done = _load_done(path)
+    done.add(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(done)))
 
 def _unit_text(
     unit: ContextUnit,
@@ -127,15 +145,55 @@ def run(
     settings: Settings | None = None,
     collection_name: str = "wpp_context",
     qdrant_client=None,
+    on_progress=None,
 ) -> IngestionSummary:
+    """on_progress(phase, index, total, source, summary), phase one of
+    "start"|"done" (once per source) or, per unit within a source,
+    "prefilter_discard"|"guardrail_start"|"guardrail_discard"|"embed_start"|
+    "indexed"|"unit_error" — "*_start" fire right before the slow LLM calls
+    (thinking models can take 1-2min/unit) so a UI never sits silent mid-call
+    with no signal that work is actually happening. optional
+    UI hook (e.g. CLI progress display / activity stream). Kept as a plain
+    callback (no event class) so this module stays free of any rendering
+    dependency; summary is the same mutable object throughout, so the
+    callback always sees live cumulative counts. Per-unit phases never carry
+    message content — only source (alias/is_group) and aggregate counts,
+    per the "never log personal content" rule."""
     settings = settings or Settings()
     summary = IngestionSummary(run_id=uuid.uuid4().hex)
     started = time.monotonic()
 
-    for source in settings.sources():
-        raw_messages = wpp.history(source["jid"], start, end)
+    wpp.ensure_session()  # self-heal a dropped WhatsApp session (PRD: unattended run)
+
+    all_sources = settings.sources()
+    done_ranges = _load_done(settings.ingestion_state_path)
+    pending = [s for s in all_sources if (s["alias"], start, end) not in done_ranges]
+    skipped = [s for s in all_sources if (s["alias"], start, end) in done_ranges]
+
+    # "dead chicken" ordering: fetch history for every pending source up front
+    # and process the lightest ones first, so the run racks up done sources
+    # fast and saves the slow/heavy ones (more units -> more LLM calls) for
+    # last, instead of stalling on whichever alias happens to sort first.
+    history_cache = {s["alias"]: wpp.history(s["jid"], start, end) for s in pending}
+    pending.sort(key=lambda s: len(history_cache[s["alias"]]))
+    sources = skipped + pending
+
+    for index, source in enumerate(sources, start=1):
+        if on_progress:
+            on_progress("start", index, len(sources), source, summary)
+
+        state_key = (source["alias"], start, end)
+        if state_key in done_ranges:
+            if on_progress:
+                on_progress("done", index, len(sources), source, summary)
+            continue  # already fully processed this exact range in a prior run()
+
+        raw_messages = history_cache[source["alias"]]
         summary.messages_read += len(raw_messages)
         if not raw_messages:
+            _mark_done(settings.ingestion_state_path, state_key)
+            if on_progress:
+                on_progress("done", index, len(sources), source, summary)
             continue  # zero messages in period -> no further calls, no writes
 
         envelopes = [
@@ -154,50 +212,75 @@ def run(
         for msg in envelopes:
             if should_discard(msg, seen_ids):
                 summary.prefilter_discarded += 1
+                if on_progress:
+                    on_progress("prefilter_discard", index, len(sources), source, summary)
             else:
                 kept.append(msg)
             if msg.message_id:
                 seen_ids.add(msg.message_id)
         if not kept:
+            _mark_done(settings.ingestion_state_path, state_key)
+            if on_progress:
+                on_progress("done", index, len(sources), source, summary)
             continue
 
         messages_by_id = {m.message_id: m for m in kept if m.message_id}
         units = group(kept, settings.conversation_gap_minutes)
+        errors_before = summary.errors
 
         for unit in units:
             try:
                 artifacts, media = _process_media(unit, messages_by_id, summary)
-            except Exception:
-                logger.warning("unit %s status=failed_media", unit.id)
+            except Exception as exc:
+                logger.warning("unit %s status=failed_media error=%s", unit.id, exc)
                 summary.errors += 1
+                if on_progress:
+                    on_progress("unit_error", index, len(sources), source, summary)
                 continue
 
             try:
+                if on_progress:
+                    on_progress("guardrail_start", index, len(sources), source, summary)
                 guardrail = inference.classify_and_extract(_unit_text(unit, messages_by_id, artifacts))
-            except Exception:
-                logger.warning("unit %s status=failed_guardrail", unit.id)
+            except Exception as exc:
+                logger.warning("unit %s status=failed_guardrail error=%s", unit.id, exc)
                 summary.errors += 1
+                if on_progress:
+                    on_progress("unit_error", index, len(sources), source, summary)
                 continue
 
             if guardrail.decision != "index":
                 summary.guardrail_discarded += 1
                 logger.info("unit %s status=skipped", unit.id)
+                if on_progress:
+                    on_progress("guardrail_discard", index, len(sources), source, summary)
                 continue
 
             try:
+                if on_progress:
+                    on_progress("embed_start", index, len(sources), source, summary)
                 vector = inference.embed(build_embedding_text(guardrail))
                 qdrant.upsert(
                     unit, guardrail, vector,
                     collection_name=collection_name, client=qdrant_client,
                     media=media,
                 )
-            except Exception:
-                logger.warning("unit %s status=failed_embedding_or_index", unit.id)
+            except Exception as exc:
+                logger.warning("unit %s status=failed_embedding_or_index error=%s", unit.id, exc)
                 summary.errors += 1
+                if on_progress:
+                    on_progress("unit_error", index, len(sources), source, summary)
                 continue
 
             summary.contexts_indexed += 1
             logger.info("unit %s status=processed", unit.id)
+            if on_progress:
+                on_progress("indexed", index, len(sources), source, summary)
+
+        if summary.errors == errors_before:
+            _mark_done(settings.ingestion_state_path, state_key)  # only skip-worthy if fully clean
+        if on_progress:
+            on_progress("done", index, len(sources), source, summary)
 
     summary.duration_seconds = time.monotonic() - started
     return summary

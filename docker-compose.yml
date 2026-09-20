@@ -2,15 +2,28 @@ services:
   wpp-context:
     build: .
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8003:8000"  # 8000/8001 ocupados por outros containers (sessionflow-*) no host
     environment:
-      - VISION_MODEL=${VISION_MODEL:-gemma4:12b}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - WPP_OLLAMA_URL=${WPP_OLLAMA_URL:-http://host.docker.internal:11434}
+      # fixo (não ${QDRANT_URL} do host): dentro do compose network o qdrant
+      # só é alcançável pelo nome do serviço, nunca por 127.0.0.1 (esse é o
+      # valor que o .env usa pro CLI rodando fora do container)
+      - QDRANT_URL=http://qdrant:6333
+      # texto+visão via 9router (decisão revista 2026-09-19) — gateway roda no
+      # host, não no compose network, por isso host.docker.internal.
+      - NINE_ROUTER_URL=${NINE_ROUTER_URL:-http://host.docker.internal:20128}
+      - NINE_ROUTER_COMBO=${NINE_ROUTER_COMBO:-wpp-context}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:?ANTHROPIC_AUTH_TOKEN precisa estar setado no host (token do 9router)}
       - INGEST_CONCURRENCY=${INGEST_CONCURRENCY:-1}
       - MEDIA_CONCURRENCY=${MEDIA_CONCURRENCY:-1}
       - CONVERSATION_GAP_MINUTES=${CONVERSATION_GAP_MINUTES:-20}
+    volumes:
+      # allowlist compartilhada com outras skills (monitor.py etc) — só leitura,
+      # nunca whatsapp-personal.env. Container roda como root, daí /root/... aqui
+      # bater com Settings.whatsapp_env_path.expanduser() dentro dele.
+      - ~/.claude/secrets/whatsapp.env:/root/.claude/secrets/whatsapp.env:ro
+      - ~/.claude/secrets/whatsapp-lids.json:/root/.claude/secrets/whatsapp-lids.json:ro
     tmpfs:
       - /tmp/wpp-media
     depends_on:

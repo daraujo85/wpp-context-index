@@ -58,20 +58,14 @@ class Settings:
             )
         ).expanduser()
     )
-    vision_model: str = field(
-        default_factory=lambda: os.environ.get("VISION_MODEL", "gemma4:12b")
-    )
     embedding_model: str = field(
         default_factory=lambda: os.environ.get(
             "EMBEDDING_MODEL", "nomic-embed-text"
         )
     )
-    text_model: str = field(
-        default_factory=lambda: os.environ.get("TEXT_MODEL", "qwen3:8b")
-    )
     ollama_base_url: str = field(
         default_factory=lambda: os.environ.get(
-            "OLLAMA_BASE_URL", "http://localhost:11434"
+            "WPP_OLLAMA_URL", "http://localhost:11434"
         )
     )
     qdrant_url: str = field(
@@ -93,10 +87,28 @@ class Settings:
     media_max_size_mb: int = field(
         default_factory=lambda: int(os.environ.get("MEDIA_MAX_SIZE_MB", "25"))
     )
+    ingestion_state_path: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get(
+                "INGESTION_STATE_PATH",
+                str(Path(__file__).resolve().parent.parent / ".data" / "ingested.json"),
+            )
+        ).expanduser()
+    )
+    excluded_aliases: frozenset[str] = field(
+        default_factory=lambda: frozenset(
+            a.strip().lower()
+            for a in os.environ.get("WPP_EXCLUDE_ALIASES", "").split(",")
+            if a.strip()
+        )
+    )
 
     def sources(self) -> list[dict]:
         """Allowlisted WhatsApp sources from whatsapp.env: WPP_CONTACT_* (DMs)
-        and WPP_GROUP_* (groups), keyed by alias (lowercased suffix)."""
+        and WPP_GROUP_* (groups), keyed by alias (lowercased suffix).
+        `excluded_aliases` (project-local WPP_EXCLUDE_ALIASES, e.g. the
+        operator's own contact) filters project-side, without touching the
+        machine-wide whatsapp.env shared by other tools (monitor.py etc)."""
         env_vars = _parse_env_file(self.whatsapp_env_path)
         result = []
         for key, val in env_vars.items():
@@ -105,6 +117,8 @@ class Settings:
             elif key.startswith("WPP_GROUP_"):
                 alias, is_group = key[len("WPP_GROUP_"):].lower(), True
             else:
+                continue
+            if alias in self.excluded_aliases:
                 continue
             result.append({"alias": alias, "jid": val, "is_group": is_group})
         return result
@@ -115,3 +129,12 @@ class Settings:
             return {}
         data = json.loads(self.whatsapp_lids_path.read_text())
         return {k: v for k, v in data.items() if not k.startswith("_")}
+
+    def chat_name(self, chat_id: str) -> str | None:
+        """Reverse lookup of ingestion.py's chat_id (always `source["jid"]`,
+        i.e. sources()'s own jid value unchanged) back to its allowlist
+        alias. None if the chat isn't (or is no longer) in the allowlist."""
+        for source in self.sources():
+            if source["jid"] == chat_id:
+                return source["alias"]
+        return None
