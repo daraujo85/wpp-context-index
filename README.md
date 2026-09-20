@@ -1,8 +1,21 @@
 # wpp-context-index
 
 Índice/busca de contexto sobre mensagens WhatsApp (WPP), com ingestão
-multimodal (texto/mídia) para Qdrant. Ver `docs/PRD.md` para o produto
-completo.
+multimodal (texto/mídia) para Qdrant. Local-first: nenhuma mensagem sai
+pra LLM externa (embeddings e descrição de imagem rodam em modelos locais
+via Ollama). Ver `docs/PRD.md` para o produto completo.
+
+## Como isso conversa com o WhatsApp
+
+Este projeto **não fala com o WhatsApp diretamente** — ele consome a API
+REST de um gateway já rodando em cima do
+[WPPConnect](https://github.com/wppconnect-team/wppconnect) (a lib
+open-source que abre uma sessão do WhatsApp Web via Puppeteer e expõe as
+mensagens por HTTP). `app/adapters/wpp.py` só faz `subprocess` sobre o
+`wpp.sh` (script separado, não incluso aqui) que chama esse gateway —
+`getAllMessagesByContactId`, `getAllChats`, `getBase64File` etc. Sem um
+gateway WPPConnect (ou compatível) rodando e acessível, a ingestão não
+tem o que ler.
 
 ## Setup
 
@@ -10,6 +23,13 @@ completo.
 cp .env.example .env   # ajuste WPP_OLLAMA_URL/QDRANT_URL etc.
 docker compose up -d
 ```
+
+Pré-requisitos externos a este repo:
+- Um gateway WPPConnect com sessão do WhatsApp autenticada, acessível
+  via o wrapper de `wpp.sh` referenciado em `app/adapters/wpp.py`.
+- Ollama local com os modelos de `EMBEDDING_MODEL`/`VISION_MODEL`/`TEXT_MODEL`.
+- Allowlist de contatos/grupos em `WHATSAPP_ENV_PATH`/`WHATSAPP_LIDS_PATH`
+  (arquivos locais, fora do controle de versão — ver `.env.example`).
 
 ## Uso da CLI
 

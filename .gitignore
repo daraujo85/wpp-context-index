@@ -8,3 +8,4 @@ venv/
 graphify-out/
 .grepai/
 .data/
+.claude/
