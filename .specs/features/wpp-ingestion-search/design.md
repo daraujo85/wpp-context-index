@@ -100,6 +100,26 @@ delega a `wpp.py.get_media` (subprocess `wpp.sh get-media`) sob demanda,
 sem cache permanente (cache temporário de curtíssima duração é aceitável
 se necessário, com cleanup garantido).
 
+## Camada de mensagens (M4)
+
+Segunda collection `wpp_messages` (ponto por mensagem, ID = uuid5 do
+`message_id`). Payload: `message_id, company, chat{id,is_group},
+sender{id,name}, timestamp, day, type, text, quoted_message_id,
+context_id|null, media_ref{message_id, fetch_url}|null`. `text` é sempre
+texto (redigido / legenda / descrição / transcrição); o vetor usa a
+mensagem + 1 vizinha de cada lado na mesma unidade (contexto curto pra
+mensagem tipo "ok, pode subir"), mas `text` guarda só a própria
+mensagem. Índice full-text em `text`, keyword em `context_id`/`chat.id`/
+`day`. Criada lazy no 1º upsert.
+
+`wpp_context` ⇄ `wpp_messages`: `context_id` é o mesmo point id do
+resumo. Busca default continua no resumo; `expand` anexa mensagens;
+`scope=messages` busca nas mensagens e anexa o resumo.
+
+Backfill (`backfill-messages`) não chama LLM de texto: agrupamento é
+determinístico, então `unit.id` reproduz o point id do resumo já
+indexado; descrições de mídia vêm de `payload.media`.
+
 ## Configuração (sem hard-code de modelo)
 
 ```env

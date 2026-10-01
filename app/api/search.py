@@ -11,11 +11,13 @@ that's out of this task's scope).
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.services.search import search
+from app.services.search import search, search_messages
 
 router = APIRouter()
 
@@ -24,13 +26,41 @@ class SearchRequest(BaseModel):
     query: str
     filters: dict | None = None
     limit: int = 10
+    scope: Literal["contexts", "messages"] = "contexts"
+    expand: bool = False  # contexts scope: attach each summary's original messages
+
+
+def _message_hit(h, settings: Settings) -> dict:
+    return {
+        "message_id": h.message_id,
+        "score": h.score,
+        "text": h.text,
+        "chat_name": settings.chat_name(h.chat_id) if h.chat_id else None,
+        "sender": h.sender,
+        "timestamp": h.timestamp,
+        "type": h.type,
+        "media_ref": h.media_ref,
+        "context_id": h.context_id,
+        "context": h.context,
+        "source_url": f"/api/v1/source/{h.context_id}" if h.context_id else None,
+    }
 
 
 @router.post("/api/v1/search")
 def search_endpoint(request: SearchRequest) -> dict:
-    results = search(request.query, filters=request.filters, limit=request.limit)
     settings = Settings()
-    return {
+    if request.scope == "messages":
+        hits = search_messages(request.query, filters=request.filters, limit=request.limit)
+        return {
+            "query": request.query,
+            "scope": "messages",
+            "results": [_message_hit(h, settings) for h in hits],
+        }
+
+    # expand only passed when set, so the default call stays search(q, filters, limit)
+    extra = {"expand": True} if request.expand else {}
+    results = search(request.query, filters=request.filters, limit=request.limit, **extra)
+    response = {
         "query": request.query,
         "results": [
             {
@@ -46,7 +76,9 @@ def search_endpoint(request: SearchRequest) -> dict:
                 "media_types": [],
                 "urls": [],
                 "source_url": f"/api/v1/source/{r.context_id}",
+                **({"messages": r.messages} if request.expand else {}),
             }
             for r in results
         ],
     }
+    return response

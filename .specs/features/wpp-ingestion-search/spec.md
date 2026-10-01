@@ -147,6 +147,44 @@ original correspondente.
 
 ---
 
+### P4: Mensagens na íntegra, ligadas ao resumo
+
+**User Story**: Como usuário/agente, quero além do resumo de cada
+conversa ter todas as mensagens originais normalizadas em texto
+(imagem → descrição, áudio/vídeo → transcrição), acessíveis a partir do
+resumo e também buscáveis diretamente, com ponteiro pra mídia original.
+
+**Why P4**: resumo é a melhor porta de entrada (palavra solta no texto
+cru gera match ruim), mas detalhe exato (frase, número, link) só existe
+na mensagem original.
+
+**Decisão (desvia do PRD §8 "descartada = nada persiste")**: toda
+mensagem que passa no pré-filtro determinístico é gravada em
+`wpp_messages`, mesmo de unidade descartada pelo Guard Rail
+(`context_id = null`). Segredos continuam redigidos; binário de mídia
+nunca é armazenado.
+
+**Acceptance Criteria**:
+
+1. WHEN uma unidade é processada (index ou discard) THEN cada mensagem
+   SHALL virar um ponto em `wpp_messages` com `text` só-texto, remetente,
+   timestamp, `day`, `type`, `context_id` (ou null) e `media_ref` quando
+   houver mídia.
+2. WHEN `POST /api/v1/search` recebe `expand=true` THEN cada resultado
+   SHALL trazer suas mensagens originais em ordem cronológica.
+3. WHEN `POST /api/v1/search` recebe `scope="messages"` THEN o sistema
+   SHALL buscar em `wpp_messages` e cada hit SHALL trazer o resumo do
+   contexto ao qual pertence (se houver).
+4. WHEN o backfill roda num período já indexado THEN o sistema SHALL
+   popular `wpp_messages` sem nova chamada à LLM de texto e reusando as
+   descrições de mídia já salvas no resumo.
+
+**Independent Test**: buscar uma frase exata dita numa conversa →
+`scope=messages` acha a mensagem e mostra o resumo; `expand=true` sobre
+o mesmo resumo devolve a mensagem.
+
+---
+
 ## Traceability
 
 | Story | PRD ref | Milestone (ROADMAP.md) |
@@ -155,3 +193,4 @@ original correspondente.
 | Guard Rail de privacidade | §8, §22 Cenário 5/6 | M1 |
 | Busca multimodal | §6.3, §22 Cenário 2/3/4 | M2 |
 | Recuperação da origem & agente | §12, §15, §22 Cenário 8/9 | M3 |
+| Mensagens na íntegra | — (decisão 2026-10-01, desvia §8) | M4 |

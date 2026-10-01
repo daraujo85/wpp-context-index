@@ -17,6 +17,7 @@ from qdrant_client.http.models import Distance, VectorParams
 
 import app.adapters.inference as inference_module
 import app.adapters.wpp as wpp_module
+from app.adapters.qdrant import messages_collection_for
 from app.domain.guardrail import GuardrailResult
 from app.services.ingestion import run
 
@@ -33,6 +34,9 @@ def client():
     )
     yield c
     c.delete_collection(_COLLECTION)
+    messages = messages_collection_for(_COLLECTION)
+    if c.collection_exists(messages):
+        c.delete_collection(messages)
 
 def _raw(msg_id, sender, t, body):
     return {"id": msg_id, "sender": sender, "t": t, "type": "chat", "body": body}
@@ -230,3 +234,29 @@ def test_on_progress_fires_start_and_done_once_per_source_in_order(client, monke
     assert ("guardrail_discard", 2, 4, "pessoal") in events  # pessoal's unit discarded
     assert ("indexed", 3, 4, "relevante") in events
     assert ("indexed", 4, 4, "misto") in events
+
+def test_every_prefiltered_message_lands_in_wpp_messages_linked_to_its_context(client, monkeypatch):
+    """M4/T29: indexed AND guardrail-discarded units both write their
+    messages; discarded ones carry context_id=None."""
+    monkeypatch.setattr(wpp_module, "history", _fake_history)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _fake_classify_and_extract)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+
+    summary = run(
+        "2026-01-01T00:00:00", "2026-01-02T00:00:00",
+        settings=_fake_settings(_ALL_SOURCES),
+        collection_name=_COLLECTION, qdrant_client=client,
+    )
+
+    messages = messages_collection_for(_COLLECTION)
+    assert summary.messages_indexed == 5
+    points = {p.payload["message_id"]: p.payload for p in client.scroll(messages, limit=20)[0]}
+    assert set(points) == {"true_1", "true_2", "true_3", "true_4", "true_5"}
+
+    context_ids = {str(p.id) for p in client.scroll(_COLLECTION, limit=10)[0]}
+    assert points["true_1"]["context_id"] in context_ids
+    assert points["true_1"]["context_id"] == points["true_2"]["context_id"]
+    assert points["true_3"]["context_id"] is None  # pessoal: discarded, still persisted
+    assert points["true_1"]["text"] == "WORK_ONLY: bug 500 no checkout"
+    assert points["true_1"]["day"] == "2023-11-14"
+    assert points["true_1"]["media_ref"] is None

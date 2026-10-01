@@ -19,12 +19,14 @@ source.message_ids, plus the optional media (T20) list when passed in.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from qdrant_client import QdrantClient
 
 from app.config import Settings
 from app.domain.contexts import ContextUnit
 from app.domain.guardrail import GuardrailResult
+from app.domain.messages import MessageEnvelope
 
 SCHEMA_VERSION = 1
 
@@ -61,7 +63,7 @@ def upsert(
     client: QdrantClient | None = None,
     media: list[dict] | None = None,
 ) -> None:
-    client = client or QdrantClient(url=Settings().qdrant_url)
+    client = client or QdrantClient(url=Settings().qdrant_url, timeout=30)
     client.upsert(
         collection_name=collection_name,
         points=[{
@@ -70,3 +72,84 @@ def upsert(
             "payload": build_payload(unit, guardrail, media=media),
         }],
     )
+
+# ── wpp_messages (M4, T28): one point per message, always text ─────────────
+
+MESSAGES_SCHEMA_VERSION = 1
+_MESSAGE_ID_NAMESPACE = uuid.UUID("6f1d3c2e-4b7a-4e0f-9c11-7a2b5d8e9f01")
+
+def messages_collection_for(contexts_collection: str) -> str:
+    """`wpp_context` -> `wpp_messages`; a test collection `wpp_context_test_x`
+    -> `wpp_messages_test_x`, so tests never touch the real messages layer."""
+    if contexts_collection.startswith("wpp_context"):
+        return "wpp_messages" + contexts_collection[len("wpp_context"):]
+    return contexts_collection + "_messages"
+
+def message_point_id(message_id: str) -> str:
+    # message ids are opaque WhatsApp strings, not hashes -> uuid5, deterministic
+    return str(uuid.uuid5(_MESSAGE_ID_NAMESPACE, message_id))
+
+def ensure_messages_collection(client: QdrantClient, collection_name: str, vector_size: int) -> None:
+    """Lazy create (nothing else in the project creates collections) + payload
+    indexes: full-text on `text` for exact words/ids, keyword on the fields
+    the search filters on."""
+    if client.collection_exists(collection_name):
+        return
+    from qdrant_client.http.models import (
+        Distance, PayloadSchemaType, TextIndexParams, TextIndexType, TokenizerType, VectorParams,
+    )
+    client.create_collection(
+        collection_name, vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
+    )
+    client.create_payload_index(
+        collection_name, "text",
+        field_schema=TextIndexParams(
+            type=TextIndexType.TEXT, tokenizer=TokenizerType.MULTILINGUAL, lowercase=True,
+        ),
+    )
+    for field_name in ("context_id", "chat.id", "day"):
+        client.create_payload_index(collection_name, field_name, field_schema=PayloadSchemaType.KEYWORD)
+
+def upsert_messages(
+    points: list[dict],
+    collection_name: str = "wpp_messages",
+    client: QdrantClient | None = None,
+) -> None:
+    """points: [{"message_id", "vector", "payload"}]. Idempotent by message_id."""
+    if not points:
+        return
+    client = client or QdrantClient(url=Settings().qdrant_url, timeout=30)
+    ensure_messages_collection(client, collection_name, len(points[0]["vector"]))
+    client.upsert(
+        collection_name=collection_name,
+        points=[
+            {"id": message_point_id(p["message_id"]), "vector": p["vector"], "payload": p["payload"]}
+            for p in points
+        ],
+    )
+
+def build_message_payload(msg: MessageEnvelope, text: str, context_id: str | None) -> dict:
+    day = (
+        datetime.fromtimestamp(msg.timestamp).date().isoformat()
+        if msg.timestamp is not None else None
+    )
+    payload = {
+        "schema_version": MESSAGES_SCHEMA_VERSION,
+        "message_id": msg.message_id,
+        "company": msg.company,
+        "chat": {"id": msg.chat_id, "is_group": msg.is_group},
+        "sender": {"id": msg.sender_id, "name": msg.sender_name},
+        "timestamp": msg.timestamp,
+        "day": day,
+        "type": msg.type,
+        "text": text,
+        "quoted_message_id": msg.quoted_message_id,
+        "context_id": context_id,  # None = unit discarded by the guard rail
+        "media_ref": None,
+    }
+    if msg.has_media and msg.message_id:
+        payload["media_ref"] = {
+            "message_id": msg.message_id,
+            "fetch_url": f"/api/v1/source/media/{msg.message_id}",
+        }
+    return payload

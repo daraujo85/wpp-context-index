@@ -226,8 +226,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--start", type=_iso_date, required=True)
     ingest.add_argument("--end", type=_iso_date, required=True)
 
+    backfill = sub.add_parser(
+        "backfill-messages",
+        help="populate wpp_messages for an already-ingested range (no text LLM)",
+    )
+    backfill.add_argument("--start", type=_iso_date, required=True)
+    backfill.add_argument("--end", type=_iso_date, required=True)
+
     search = sub.add_parser("search", help="search indexed messages")
     search.add_argument("query")
+    search.add_argument("--scope", choices=["contexts", "messages"], default="contexts")
+    search.add_argument("--expand", action="store_true", help="show each summary's original messages")
 
     inspect = sub.add_parser("inspect", help="inspect a message by id")
     inspect.add_argument("id")
@@ -263,11 +272,37 @@ def main(argv: list[str] | None = None) -> int:
             kind = "grupo" if src["is_group"] else "dm"
             n = state.source_msgs.get(src["alias"], 0)
             print(f"  {src['alias']} ({kind}): {n} msg")
+    elif args.command == "backfill-messages":
+        def on_progress(phase, i, t, src, s):
+            if phase == "done":
+                print(f"  [{i}/{t}] {src['alias']}: messages_indexed={s.messages_indexed}", flush=True)
+
+        summary = ingestion.backfill_messages(
+            f"{args.start}T00:00:00", f"{args.end}T00:00:00",
+            on_progress=on_progress,
+        )
+        print(
+            f"backfill-messages: range {args.start}..{args.end} run_id={summary.run_id} "
+            f"messages_read={summary.messages_read} messages_indexed={summary.messages_indexed} "
+            f"linked_units={summary.contexts_indexed} unlinked_units={summary.guardrail_discarded} "
+            f"errors={summary.errors}"
+        )
     elif args.command == "search":
-        results = search_service.search(args.query)
-        print(f"search: query={args.query!r} results={len(results)}")
-        for r in results:
-            print(f"  - {r.context_id} score={r.score:.3f} title={r.title!r}")
+        if args.scope == "messages":
+            hits = search_service.search_messages(args.query)
+            print(f"search: query={args.query!r} scope=messages results={len(hits)}")
+            for h in hits:
+                title = (h.context or {}).get("title")
+                print(f"  - {h.message_id} score={h.score:.3f} context={h.context_id} title={title!r}")
+                print(f"      {(h.sender or {}).get('name')}: {h.text!r}")
+        else:
+            extra = {"expand": True} if args.expand else {}
+            results = search_service.search(args.query, **extra)
+            print(f"search: query={args.query!r} results={len(results)}")
+            for r in results:
+                print(f"  - {r.context_id} score={r.score:.3f} title={r.title!r}")
+                for m in r.messages:
+                    print(f"      {(m['sender'] or {}).get('name')}: {m['text']!r}")
     elif args.command == "inspect":
         print(f"inspect: id={args.id!r} (services.inspect not implemented yet)")
     elif args.command == "source":

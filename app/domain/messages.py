@@ -30,6 +30,10 @@ _TYPE_MAP = {
     "notification_template": "system",
     "gp2": "system",
     "protocol": "system",
+    # `album` is only a container: its images arrive as their own `image`
+    # messages. `ciphertext` = not yet decrypted, no readable content.
+    "album": "system",
+    "ciphertext": "system",
 }
 _MEDIA_TYPES = {"image", "audio", "video", "document"}
 
@@ -51,6 +55,34 @@ class MessageEnvelope:
     body: str | None
     quoted_message_id: str | None
     has_media: bool
+    filename: str | None = None
+
+
+def _sender(raw: dict[str, Any], is_group: bool) -> tuple[str | None, str | None]:
+    """In groups the real author is `author` (@lid); `sender` comes as a
+    contact dict (id/pushname/name), or a plain string in older fixtures."""
+    sender = raw.get("sender")
+    sender_id = sender.get("id", {}).get("_serialized") if isinstance(sender, dict) else sender
+    if is_group and raw.get("author"):
+        sender_id = raw["author"]
+    sender_name = None
+    if isinstance(sender, dict):
+        sender_name = sender.get("pushname") or sender.get("name") or sender.get("formattedName")
+    return sender_id, sender_name
+
+
+_THUMBNAIL = re.compile(r"^[A-Za-z0-9+/=\s]{64,}$")  # base64 blob, no real words
+
+
+def _body(raw: dict[str, Any], msg_type: str | None) -> str | None:
+    """For media, `body` is empty or a tiny base64 thumbnail — the text the
+    user actually typed is in `caption`."""
+    body = raw.get("body")
+    if msg_type in _MEDIA_TYPES:
+        if raw.get("caption"):
+            return raw["caption"]
+        return None if not body or _THUMBNAIL.match(body) else body
+    return body
 
 
 def normalize(
@@ -62,19 +94,22 @@ def normalize(
     is_group: bool,
 ) -> MessageEnvelope:
     msg_type = _TYPE_MAP.get(raw.get("type"))
+    sender_id, sender_name = _sender(raw, is_group)
+    timestamp = raw.get("t")
     return MessageEnvelope(
         company=company,
         chat_id=chat_id,
         chat_name=chat_name,
         is_group=is_group,
         message_id=raw.get("id"),
-        sender_id=raw.get("sender"),
-        sender_name=None,  # not present in raw wpp.sh history() shape
-        timestamp=raw.get("t"),
+        sender_id=sender_id,
+        sender_name=sender_name,
+        timestamp=int(timestamp) if timestamp is not None else None,  # gateway sends "t" as str
         type=msg_type,
-        body=raw.get("body"),
+        body=_body(raw, msg_type),
         quoted_message_id=raw.get("quotedMsgId"),
         has_media=msg_type in _MEDIA_TYPES,
+        filename=raw.get("filename"),
     )
 
 

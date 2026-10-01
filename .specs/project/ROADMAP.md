@@ -106,6 +106,18 @@ uso diário (PRD Fases 4-5). Código-completo via `tasks-m3.md` T22-T25.
   (`IngestionSummary`) já estavam satisfeitos por código de M1/M2 —
   confirmado por leitura direta, sem task nova
 
+**Mensagens na íntegra (M4)** - DONE (T26-T32)
+
+- Normalização corrigida (autor em grupo, legenda de mídia, filename,
+  album/ciphertext) — T26
+- `wpp_messages`: 1 ponto por mensagem, texto normalizado, `context_id`
+  ligando ao resumo, `media_ref` — T27-T29 (desvia PRD §8: unidade
+  descartada também grava, com `context_id` null)
+- `backfill-messages` sem LLM de texto, reusando `payload.media` — T30
+- Busca `scope=messages` / `expand`, `/source` com texto — T31
+- Skill + README — T32. Backfill real limitado a ago–set/2026: gateway
+  não retém abril–julho
+
 ---
 
 ## Future Considerations

@@ -18,6 +18,7 @@ import app.adapters.transcription as transcription_module
 import app.adapters.wpp as wpp_module
 from app.adapters.transcription import TranscriptionResult
 from app.adapters.wpp import WppMediaNotFoundError
+from app.adapters.qdrant import messages_collection_for
 from app.domain.guardrail import GuardrailResult
 from app.services.ingestion import run
 
@@ -35,6 +36,9 @@ def client():
     )
     yield c
     c.delete_collection(_COLLECTION)
+    messages = messages_collection_for(_COLLECTION)
+    if c.collection_exists(messages):
+        c.delete_collection(messages)
 
 
 def _raw(msg_id, sender, t, body, msg_type="chat"):
@@ -94,6 +98,11 @@ def test_image_fixture_indexes_media_and_embedding_text(client, monkeypatch, tmp
     assert payload["media"] == [{"message_id": "img_1", "type": "image", "description": "tela de erro 500 visivel"}]
     assert "tela de erro 500 visivel" in payload["summary"]
     assert not image_path.exists()  # downloaded media deleted after processing
+
+    message = client.scroll(messages_collection_for(_COLLECTION), limit=10)[0][0].payload
+    assert message["text"] == "[imagem] tela de erro 500 visivel"
+    assert message["context_id"] == str(points[0].id)
+    assert message["media_ref"] == {"message_id": "img_1", "fetch_url": "/api/v1/source/media/img_1"}
 
 
 def test_audio_fixture_embedding_text_contains_transcript(client, monkeypatch, tmp_media_dir):

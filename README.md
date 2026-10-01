@@ -41,13 +41,18 @@ flowchart LR
         M --> D["transcreve/descreve\n(Whisper local / 9router visão)"]
         D --> E
         G -->|só texto| E["extração + guard rail\n(9router texto)"]
-        E -->|descartada| X[(nada persiste)]
         E -->|relevante| EMB["embedding\n(Ollama local)"]
-        EMB --> Q[(Qdrant)]
+        EMB --> Q[("wpp_context\n(resumos)")]
+        G --> MT["texto por mensagem\n(legenda / descrição / transcrição)"]
+        MT --> QM[("wpp_messages\n(íntegra, context_id)")]
+        E -.->|descartada: context_id null| QM
+        Q -.->|context_id| QM
     end
     subgraph Busca
         QRY["query"] --> EMB2["embedding\n(Ollama local)"] --> Q
         Q --> R["resultados\n(score + source_url)"]
+        R -->|expand| QM
+        EMB2 -->|scope=messages| QM
     end
 ```
 
@@ -72,7 +77,23 @@ Pré-requisitos externos a este repo:
 ```bash
 python -m app.cli ingest --start 2026-09-01 --end 2026-09-18   # TUI rich com progresso ao vivo
 python -m app.cli search "onde mandaram o mockup?"
+python -m app.cli search "onde mandaram o mockup?" --expand     # + mensagens na íntegra
+python -m app.cli search "0xDEAD" --scope messages              # direto nas mensagens
+python -m app.cli backfill-messages --start 2026-08-01 --end 2026-10-01  # popula wpp_messages sem LLM de texto
 ```
+
+`backfill-messages` é retomável: fontes concluídas ficam em `.data/ingested.json`
+(`messages:<alias>`) e são puladas; upsert idempotente. Mídia de unidade sem
+resumo não é baixada — vira tag + legenda + `media_ref` (original sob demanda).
+
+### Duas camadas
+
+- `wpp_context`: um resumo por conversa (só o que passou no Guard Rail).
+- `wpp_messages`: toda mensagem que passou no pré-filtro, na íntegra e
+  sempre em texto (imagem → descrição, áudio/vídeo → transcrição,
+  documento → nome + legenda; segredos redigidos; binário nunca salvo).
+  `context_id` aponta pro resumo (ou `null` se a conversa foi descartada)
+  e `media_ref.fetch_url` pra mídia original sob demanda.
 
 ## Uso da API
 
@@ -97,7 +118,9 @@ curl -sX POST localhost:8000/api/v1/search \
 
 `POST /api/v1/ingest` só devolve `run_id` — sem progresso incremental
 (a TUI ao vivo é exclusiva da CLI). `filters`/`limit` em `/search` são
-opcionais.
+opcionais; `"expand": true` anexa as mensagens de cada resumo e
+`"scope": "messages"` busca nas mensagens (cada hit traz seu resumo).
+`GET /api/v1/source/{id}` devolve as mensagens com texto/remetente/hora.
 
 ## Agendamento (ingestão diária via cron do host)
 

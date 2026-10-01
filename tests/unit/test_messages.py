@@ -211,3 +211,33 @@ def test_validate_mime_mismatched_pairs():
 def test_validate_mime_unchecked_type_always_true():
     # document/other non-media-family types have no MIME family to check.
     assert validate_mime("document", "application/pdf") is True
+
+def test_normalize_group_message_uses_author_and_pushname():
+    raw = {
+        "id": "g1", "t": "1790676254", "type": "chat", "body": "oi",
+        "author": "2488@lid",
+        "sender": {"id": {"_serialized": "2488@lid"}, "pushname": "Felipe", "name": "Felipe B"},
+    }
+    env = normalize(raw, company="g", chat_id="1203@g.us", chat_name="g", is_group=True)
+    assert env.sender_id == "2488@lid"
+    assert env.sender_name == "Felipe"
+    assert env.timestamp == 1790676254  # str "t" coerced to int
+
+def test_normalize_media_body_comes_from_caption_not_thumbnail():
+    raw = {
+        "id": "i1", "sender": "5511@c.us", "t": 1, "type": "image",
+        "body": "/9j/4AAQSkZJRgABAQ...", "caption": "print do erro",
+    }
+    assert normalize(raw, **_CTX).body == "print do erro"
+
+def test_normalize_document_keeps_filename():
+    raw = {"id": "d1", "sender": "5511@c.us", "t": 1, "type": "document", "filename": "a.pdf"}
+    env = normalize(raw, **_CTX)
+    assert env.filename == "a.pdf"
+    assert env.body is None
+
+def test_album_and_ciphertext_are_system_and_discarded():
+    for raw_type in ("album", "ciphertext"):
+        env = normalize({"id": "x", "sender": "s", "t": 1, "type": raw_type}, **_CTX)
+        assert env.type == "system"
+        assert should_discard(env)

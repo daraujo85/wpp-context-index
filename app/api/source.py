@@ -19,7 +19,9 @@ from qdrant_client import QdrantClient
 from starlette.background import BackgroundTask
 
 from app.adapters import wpp
+from app.adapters.qdrant import messages_collection_for
 from app.config import Settings
+from app.services.search import context_messages
 
 router = APIRouter()
 
@@ -27,7 +29,7 @@ router = APIRouter()
 @router.get("/api/v1/source/{context_id}")
 def get_source(context_id: str) -> dict:
     settings = Settings()
-    client = QdrantClient(url=settings.qdrant_url)
+    client = QdrantClient(url=settings.qdrant_url, timeout=30)
     try:
         points = client.retrieve("wpp_context", ids=[context_id], with_payload=True)
     except Exception:  # noqa: BLE001 - malformed id (not a UUID) -> 404, not 500
@@ -37,11 +39,16 @@ def get_source(context_id: str) -> dict:
 
     payload = points[0].payload or {}
     chat_id = (payload.get("chat") or {}).get("id")
+    # M4: full normalized text from wpp_messages when backfilled; otherwise
+    # fall back to bare ids from the summary payload.
+    messages = context_messages(context_id, messages_collection_for("wpp_context"), client)
+    if not messages:
+        messages = [
+            {"message_id": mid} for mid in (payload.get("source") or {}).get("message_ids", [])
+        ]
     return {
         "chat": {"id": chat_id, "name": settings.chat_name(chat_id) if chat_id else None},
-        "messages": [
-            {"message_id": mid} for mid in (payload.get("source") or {}).get("message_ids", [])
-        ],
+        "messages": messages,
         "media": [
             {
                 "message_id": item["message_id"],
