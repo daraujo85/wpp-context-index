@@ -94,13 +94,18 @@ def history(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> list[dict]:
     """Wraps `wpp.sh history <target> --start <start> --end <end>` (start/end
-    ISO 8601). Range with no messages returns []."""
+    ISO 8601). Range with no messages returns []. wpp.sh exits 0 even on a
+    gateway 404 (e.g. {"error":"...","chat_not_found":true}) — a dict here,
+    not a list, which would otherwise get iterated key-by-key upstream and
+    blow up normalize() on a bare str. Treat any non-list body as "no
+    messages for this source" instead."""
     out = _run(
         "history", target, "--start", start, "--end", end,
         timeout_seconds=timeout_seconds,
     )
     body = out.rsplit("\nHTTP_CODE:", 1)[0]
-    return json.loads(body) if body.strip() else []
+    data = json.loads(body) if body.strip() else []
+    return data if isinstance(data, list) else []
 
 
 def get_media(

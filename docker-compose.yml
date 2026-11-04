@@ -22,8 +22,15 @@ services:
       # allowlist compartilhada com outras skills (monitor.py etc) — só leitura,
       # nunca whatsapp-personal.env. Container roda como root, daí /root/... aqui
       # bater com Settings.whatsapp_env_path.expanduser() dentro dele.
-      - ~/.claude/secrets/whatsapp.env:/root/.claude/secrets/whatsapp.env:ro
-      - ~/.claude/secrets/whatsapp-lids.json:/root/.claude/secrets/whatsapp-lids.json:ro
+      #
+      # Monta o DIRETÓRIO ~/.claude/secrets/wpp-context-index/ (symlinks pros
+      # 2 arquivos reais), não os arquivos direto: bind mount de arquivo único
+      # trava no inode antigo quando o host reescreve o arquivo (Edit/Write
+      # do Claude Code, qualquer editor que faça rename-into-place) — o
+      # container passa a 404/500 até um `docker compose restart`. Montando
+      # o diretório, o Docker segue a entrada do diretório a cada acesso, não
+      # o inode do symlink, então sobrevive a qualquer reescrita sem restart.
+      - ~/.claude/secrets/wpp-context-index:/root/.claude/secrets:ro
     tmpfs:
       - /tmp/wpp-media
     depends_on:

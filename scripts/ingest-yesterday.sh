@@ -10,6 +10,8 @@
 #                                 (e.g. "echo" for a dry run)
 set -euo pipefail
 
+export PATH="/opt/homebrew/bin:/Users/diegoaraujo/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
 cd "$(dirname "$0")/.."
 
 if date -v-1d +%F >/dev/null 2>&1; then
@@ -30,4 +32,17 @@ export WPP_OLLAMA_URL="${WPP_OLLAMA_URL:-http://localhost:11434}"
 export QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:6333}"
 
 # shellcheck disable=SC2086 # WPP_CONTEXT_CMD is intentionally word-split
-exec ${WPP_CONTEXT_CMD:-python -m app.cli} ingest --start "$START" --end "$END"
+if [ -z "${WPP_CONTEXT_CMD:-}" ]; then
+  if [ -x ".venv/bin/python" ]; then
+    PYTHON_BIN=".venv/bin/python"
+  elif [ -x "venv/bin/python" ]; then
+    PYTHON_BIN="venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    PYTHON_BIN="python"
+  fi
+  WPP_CONTEXT_CMD="$PYTHON_BIN -m app.cli"
+fi
+
+exec $WPP_CONTEXT_CMD ingest --start "$START" --end "$END"
