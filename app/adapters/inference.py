@@ -19,7 +19,13 @@ from pathlib import Path
 from app.config import Settings
 from app.domain.guardrail import GuardrailResult, parse_guardrail_response
 
-DEFAULT_TIMEOUT_SECONDS = 400  # generoso p/ cold-load do embedding local (Ollama); 9router responde em segundos
+DEFAULT_TIMEOUT_SECONDS = 400  # generoso p/ cold-load do embedding local (Ollama)
+# O 9router responde em segundos quando o combo está saudável — herdar os 400s
+# do embedding custava caro: 400s no 1º attempt + delay + 400s no retry = ~13min
+# PARADO num único unit quando o gateway engasga (medido 2026-11-05: ingest
+# 11-04→11-05 passou 17min sem filho e sem CPU, socket ESTABLISHED em :20128).
+# Timeout próprio e curto, com override por env.
+LLM_TIMEOUT_SECONDS = int(os.environ.get("NINE_ROUTER_TIMEOUT_SECONDS", "90"))
 _RETRY_DELAY_SECONDS = 2  # one retry, transient transport errors only — not malformed responses
 
 _VISION_PROMPT = """Descreva esta imagem de forma objetiva, para indexação e busca
@@ -128,7 +134,11 @@ def _post_9router(content, timeout_seconds: int) -> str:
             with urllib.request.urlopen(request, timeout=timeout_seconds) as resp:
                 raw = resp.read().decode("utf-8")
             break
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except TimeoutError as exc:
+            # Retry de timeout só DOBRA o tempo parado (combo engasgado não
+            # volta em 2s). Falha rápido: o unit vira erro e a ingestão segue.
+            raise InferenceError(f"9router timeout after {timeout_seconds}s: {exc}") from exc
+        except urllib.error.URLError as exc:
             if attempt == 2:
                 raise InferenceError(f"9router call failed: {exc}") from exc
             time.sleep(_RETRY_DELAY_SECONDS)
@@ -148,7 +158,7 @@ def _post_9router(content, timeout_seconds: int) -> str:
 
 
 def classify_and_extract(
-    unit_text: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    unit_text: str, timeout_seconds: int = LLM_TIMEOUT_SECONDS
 ) -> GuardrailResult:
     prompt = _PROMPT_TEMPLATE.format(unit_text=unit_text)
     response = _post_9router(prompt, timeout_seconds)
@@ -170,7 +180,7 @@ _MIME_BY_SUFFIX = {".png": "image/png", ".webp": "image/webp", ".gif": "image/gi
 
 
 def describe_image(
-    image_path: str | Path, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    image_path: str | Path, timeout_seconds: int = LLM_TIMEOUT_SECONDS
 ) -> str:
     path = Path(image_path)
     image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")

@@ -12,7 +12,12 @@ from pathlib import Path
 from app.config import Settings
 
 WPP_SCRIPT = Path("~/.claude/skills/whatsapp-message/wpp.sh").expanduser()
-DEFAULT_TIMEOUT_SECONDS = 30
+# 30s era curto demais: a API upstream (wpp.boletoazap.dev.br) tem picos de
+# lentidão (responde em >60s) e o TimeoutExpired explodia — matando o dia
+# inteiro de ingestão (um source estourado abortava o history_cache em run()).
+# 120s acomoda a lentidão observada sem pendurar o processo em API morta —
+# pedido do Diego 2026-11-04 ("va rodando todos os que faltam ate terminar").
+DEFAULT_TIMEOUT_SECONDS = 120
 _RETRY_DELAY_SECONDS = 2  # one retry on timeout only — a script exit (bad target,
 # validation) is deterministic and retrying it just wastes 2s for the same result
 

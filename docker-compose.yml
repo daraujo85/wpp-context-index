@@ -31,10 +31,15 @@ services:
       # o diretório, o Docker segue a entrada do diretório a cada acesso, não
       # o inode do symlink, então sobrevive a qualquer reescrita sem restart.
       - ~/.claude/secrets/wpp-context-index:/root/.claude/secrets:ro
+      # Hot reload: a imagem faz `COPY app/ app/` (código congelado no build),
+      # então editar no host não chegava no container sem rebuild+restart.
+      # Bind do fonte + uvicorn --reload = editar arquivo já recarrega o worker.
+      - ./app:/app/app
     tmpfs:
       - /tmp/wpp-media
     depends_on:
       - qdrant
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
 
   qdrant:
     image: qdrant/qdrant
