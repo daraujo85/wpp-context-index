@@ -154,7 +154,57 @@ def _post_9router(content, timeout_seconds: int) -> str:
         except (json.JSONDecodeError, KeyError, IndexError):
             continue
         text += delta
+    if text:
+        return text
+
+    # Nem todo membro do combo fala SSE: syn/* e ds/* devolvem objetos
+    # chat.completion CRUS, colados um atrás do outro, sem prefixo "data: "
+    # (Content-Type mente: diz text/event-stream). Sem este fallback o laço
+    # acima não acha nenhuma linha "data: " e devolve "" SEM erro — o guardrail
+    # então descartava tudo (medido 2026-11-05: 249 msgs lidas, 37 unidades,
+    # 37 "descartadas", 0 resumos, HTTP 200 em todas).
+    text = ""
+    for obj in _decode_concatenated_json(raw):
+        text += _chunk_text(obj)
     return text
+
+
+def _decode_concatenated_json(raw: str):
+    """Itera objetos JSON colados (`{"a":1}{"b":2}`) com raw_decode."""
+    decoder = json.JSONDecoder()
+    index, size = 0, len(raw)
+    while index < size:
+        while index < size and raw[index] in " \r\n\t":
+            index += 1
+        if index >= size:
+            break
+        try:
+            obj, index = decoder.raw_decode(raw, index)
+        except json.JSONDecodeError:
+            break
+        yield obj
+
+
+def _chunk_text(obj) -> str:
+    """Texto de um chunk, aceitando formato streaming (`delta`) ou final
+    (`message`) — alguns providers devolvem o objeto inteiro de uma vez."""
+    try:
+        choice = obj["choices"][0]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    for container in (choice.get("message"), choice.get("delta")):
+        if not isinstance(container, dict):
+            continue
+        content = container.get("content")
+        if isinstance(content, str) and content:
+            return content
+        if isinstance(content, list):  # blocos estilo Anthropic
+            joined = "".join(
+                b.get("text", "") for b in content if isinstance(b, dict)
+            )
+            if joined:
+                return joined
+    return ""
 
 
 def classify_and_extract(
