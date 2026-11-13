@@ -60,23 +60,40 @@ class MessageEnvelope:
 
 def _sender(raw: dict[str, Any], is_group: bool) -> tuple[str | None, str | None]:
     """In groups the real author is `author` (@lid); `sender` comes as a
-    contact dict (id/pushname/name), or a plain string in older fixtures."""
-    sender = raw.get("sender")
-    sender_id = sender.get("id", {}).get("_serialized") if isinstance(sender, dict) else sender
+    contact dict (id/pushname/name), or a plain string in older fixtures.
+
+    2026-11-13: wpp.sh's `history` now enxuga a resposta antes de entregar
+    (HIST_LEAN_JQ, wpp.sh) e já separa `sender_id`/`sender_name` no próprio
+    JSON — não manda mais o dict `sender` cru (que carregava ~20 campos
+    irrelevantes por contato: profilePicThumbObj, labels, isWAContact...).
+    Esse formato novo tem prioridade; o fallback pro `sender` dict/string
+    cru fica só por segurança, caso algo chame normalize() com payload
+    não-enxuto (ex: teste unitário com fixture antiga)."""
+    if "sender_id" in raw or "sender_name" in raw:
+        sender_id = raw.get("sender_id")
+        sender_name = raw.get("sender_name")
+    else:
+        sender = raw.get("sender")
+        sender_id = sender.get("id", {}).get("_serialized") if isinstance(sender, dict) else sender
+        sender_name = None
+        if isinstance(sender, dict):
+            sender_name = sender.get("pushname") or sender.get("name") or sender.get("formattedName")
     if is_group and raw.get("author"):
         sender_id = raw["author"]
-    sender_name = None
-    if isinstance(sender, dict):
-        sender_name = sender.get("pushname") or sender.get("name") or sender.get("formattedName")
     return sender_id, sender_name
 
 
-_THUMBNAIL = re.compile(r"^[A-Za-z0-9+/=\s]{64,}$")  # base64 blob, no real words
+_THUMBNAIL = re.compile(r"^[A-Za-z0-9+/=\s]{64,}$")  # base64 blob, no real words — fallback pra payload não-enxuto
 
 
 def _body(raw: dict[str, Any], msg_type: str | None) -> str | None:
-    """For media, `body` is empty or a tiny base64 thumbnail — the text the
-    user actually typed is in `caption`."""
+    """For media, `body` is empty/null or a tiny base64 thumbnail — the text
+    the user actually typed is in `caption`.
+
+    2026-11-13: wpp.sh's `history` já zera `body` (null) pra mídia antes de
+    entregar (HIST_LEAN_JQ) — o regex `_THUMBNAIL` nunca mais deveria casar
+    de verdade, mas fica como rede de segurança caso o payload não passe
+    pelo enxugamento (ex: fixture antiga, chamada direta da API crua)."""
     body = raw.get("body")
     if msg_type in _MEDIA_TYPES:
         if raw.get("caption"):

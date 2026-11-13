@@ -56,6 +56,43 @@ def test_normalize_text_message():
     )
 
 
+def test_normalize_lean_history_format_dm():
+    """2026-11-13: wpp.sh's `history` (HIST_LEAN_JQ) sends sender_id/
+    sender_name already split instead of the raw `sender` dict — no
+    profilePicThumbObj/labels/isWAContact noise."""
+    raw = {
+        "id": "3", "sender_id": "5511@c.us", "sender_name": "Lenilson",
+        "t": 1700000002, "type": "chat", "body": "oi",
+    }
+    env = normalize(raw, **_CTX)
+    assert env.sender_id == "5511@c.us"
+    assert env.sender_name == "Lenilson"
+
+
+def test_normalize_lean_history_format_group_prefers_author():
+    """In a group, `author` (@lid of the real sender) still wins over
+    sender_id even in the new lean format — same rule as the raw dict path."""
+    raw = {
+        "id": "4", "sender_id": "5511@c.us", "sender_name": "Lenilson",
+        "author": "999@lid", "t": 1700000003, "type": "chat", "body": "oi",
+    }
+    env = normalize(raw, company="grupo", chat_id="g@g.us", chat_name="Grupo", is_group=True)
+    assert env.sender_id == "999@lid"
+    assert env.sender_name == "Lenilson"
+
+
+def test_normalize_lean_history_media_body_null():
+    """Lean format zeroes `body` (null, not a base64 thumbnail) for media —
+    _body() must fall through to caption same as the legacy thumbnail-regex path."""
+    raw = {
+        "id": "5", "sender_id": "5511@c.us", "sender_name": "Lenilson",
+        "t": 1700000004, "type": "image", "body": None, "caption": "olha isso",
+    }
+    env = normalize(raw, **_CTX)
+    assert env.body == "olha isso"
+    assert env.has_media is True
+
+
 def test_normalize_image_message_with_quoted():
     raw = {
         "id": "2", "sender": "5511@c.us", "t": 1700000001, "type": "image",
