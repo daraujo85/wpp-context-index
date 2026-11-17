@@ -83,3 +83,45 @@ def test_chats_strips_trailing_http_code_line():
     ):
         result = wpp.chats()
     assert result == [{"id": {"_serialized": "x@c.us"}}]
+
+def test_history_raises_on_error_body():
+    """wpp.sh exits 0 even when the gateway answers an error object. Turning
+    that into "no messages" made a dead session indistinguishable from a
+    quiet day — 2026-11-11 and 2026-11-13 were reported as "0 lidas · 0
+    erros" while the API still had the messages."""
+    body = "{\"error\":\"boom\",\"chat_not_found\":true}\nHTTP_CODE:404\n"
+    with patch("app.adapters.wpp.subprocess.run", return_value=_completed(body)):
+        with pytest.raises(wpp.WppError):
+            wpp.history("camila", "a", "b")
+
+# captured at import time, before conftest's autouse fixture stubs the
+# module attribute — these two tests exercise the REAL implementation
+_real_ensure_session = wpp.ensure_session
+
+
+def test_ensure_session_returns_true_when_in_chat(monkeypatch):
+    monkeypatch.setattr(wpp, "ensure_session", _real_ensure_session)
+    with patch(
+        "app.adapters.wpp.subprocess.run",
+        return_value=_completed("{\"status\":\"inChat\"}\nHTTP_CODE:200\n"),
+    ):
+        assert wpp.ensure_session() is True
+
+def test_ensure_session_returns_false_when_session_stays_down(monkeypatch):
+    monkeypatch.setattr(wpp, "ensure_session", _real_ensure_session)
+    """Unattended 3am run: a dead session must not abort the night, but it
+    must not look like success either — the caller counts the failures."""
+    with patch(
+        "app.adapters.wpp.subprocess.run",
+        return_value=_completed("{\"status\":\"notConnected\"}\nHTTP_CODE:200\n"),
+    ):
+        with patch("app.adapters.wpp.time.sleep"):
+            assert wpp.ensure_session() is False
+
+def test_history_raises_chat_not_found_distinctly():
+    """A bad JID is permanent — the ingestion layer must not retry it in
+    every round of every night (nunes/yuri/fernanda/fabat_ead2, 2026-11-17)."""
+    body = '{"error":"Chat nao encontrado no historico.","chat_not_found":true}\nHTTP_CODE:404\n'
+    with patch("app.adapters.wpp.subprocess.run", return_value=_completed(body)):
+        with pytest.raises(wpp.WppChatNotFoundError):
+            wpp.history("nunes", "a", "b")

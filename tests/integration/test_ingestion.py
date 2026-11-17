@@ -7,6 +7,7 @@ texto misto (partially-extracted, still indexed), chat vazio (0 messages).
 """
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +27,9 @@ _VECTOR_SIZE = 4  # small fake vector, no real embedding model called
 
 @pytest.fixture
 def client():
-    c = QdrantClient(url="http://127.0.0.1:6333", check_compatibility=False)
+    # timeout=30: creating the text payload index on first use can exceed
+    # the httpx default of 5s and flake the suite
+    c = QdrantClient(url="http://127.0.0.1:6333", check_compatibility=False, timeout=30)
     if c.collection_exists(_COLLECTION):
         c.delete_collection(_COLLECTION)
     c.create_collection(
@@ -147,7 +150,9 @@ def test_rerunning_same_range_skips_already_done_sources(client, monkeypatch):
     kwargs = dict(settings=settings, collection_name=_COLLECTION, qdrant_client=client)
 
     run("2026-01-01T00:00:00", "2026-01-02T00:00:00", **kwargs)
-    assert len(history_calls) == len(_ALL_SOURCES)  # first run: everyone fetched
+    # first run fetches everyone; `vazio` is re-asked by the empty-confirm
+    # rounds (an empty answer is not trusted on the first call)
+    assert sorted(set(history_calls)) == sorted(s["jid"] for s in _ALL_SOURCES)
 
     history_calls.clear()
     summary = run("2026-01-01T00:00:00", "2026-01-02T00:00:00", **kwargs)
@@ -156,8 +161,9 @@ def test_rerunning_same_range_skips_already_done_sources(client, monkeypatch):
     assert summary.contexts_indexed == 0
 
     # a different range for the same sources is untouched by the state file
+    history_calls.clear()
     run("2026-01-02T00:00:00", "2026-01-03T00:00:00", **kwargs)
-    assert len(history_calls) == len(_ALL_SOURCES)
+    assert sorted(set(history_calls)) == sorted(s["jid"] for s in _ALL_SOURCES)
 
 def test_source_with_no_messages_makes_no_calls_beyond_history(client, monkeypatch):
     calls = {"classify_and_extract": 0, "embed": 0}
@@ -260,3 +266,119 @@ def test_every_prefiltered_message_lands_in_wpp_messages_linked_to_its_context(c
     assert points["true_1"]["text"] == "WORK_ONLY: bug 500 no checkout"
     assert points["true_1"]["day"] == "2023-11-14"
     assert points["true_1"]["media_ref"] is None
+
+def test_history_failure_is_isolated_counted_and_left_unprocessed(client, monkeypatch):
+    """Unattended 3am run: one broken chat (or a dropped session) must not
+    kill the night. The failing source is retried, counted as an error, and
+    left UNMARKED so the next catch-up window reprocesses exactly it."""
+    calls = []
+
+    def _history_with_failure(target, start, end, timeout_seconds=30):
+        calls.append(target)
+        if target == "pessoal@c.us":
+            raise wpp_module.WppError("gateway: session down")
+        return _fake_history(target, start, end)
+
+    monkeypatch.setattr(wpp_module, "history", _history_with_failure)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _fake_classify_and_extract)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+    settings = _fake_settings(_ALL_SOURCES)
+    summary = run(
+        "2026-01-01T00:00:00", "2026-01-02T00:00:00",
+        settings=settings, collection_name=_COLLECTION, qdrant_client=client,
+    )
+    assert summary.errors == 1
+    assert summary.messages_read == 4          # relevante(2) + misto(2); vazio empty, pessoal failed
+    assert summary.contexts_indexed >= 1       # the healthy sources still got indexed
+    assert calls.count("pessoal@c.us") >= 3    # retried in every round
+    done = json.loads(Path(settings.ingestion_state_path).read_text())
+    assert ["pessoal", "2026-01-01T00:00:00", "2026-01-02T00:00:00"] not in done
+    assert ["relevante", "2026-01-01T00:00:00", "2026-01-02T00:00:00"] in done
+
+def test_bad_jid_is_not_retried_and_does_not_pollute_errors(client, monkeypatch):
+    """chat_not_found = wrong JID in the allowlist. Permanent: one attempt,
+    no error count (it's a config problem, already logged), and unmarked so
+    a fixed JID gets picked up by the next window."""
+    calls = []
+
+    def _history_bad_jid(target, start, end, timeout_seconds=30):
+        calls.append(target)
+        if target == "nunes@c.us":
+            raise wpp_module.WppChatNotFoundError("chat_not_found")
+        return _fake_history(target, start, end)
+
+    sources = _ALL_SOURCES + [{"alias": "nunes", "jid": "nunes@c.us", "is_group": False}]
+    monkeypatch.setattr(wpp_module, "history", _history_bad_jid)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _fake_classify_and_extract)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+    settings = _fake_settings(sources)
+    summary = run(
+        "2026-01-01T00:00:00", "2026-01-02T00:00:00",
+        settings=settings, collection_name=_COLLECTION, qdrant_client=client,
+    )
+    assert calls.count("nunes@c.us") == 1   # not retried in the other rounds
+    assert summary.errors == 0
+    done = json.loads(Path(settings.ingestion_state_path).read_text())
+    assert ["nunes", "2026-01-01T00:00:00", "2026-01-02T00:00:00"] not in done
+
+def test_empty_history_is_confirmed_before_being_trusted(client, monkeypatch):
+    """Measured 2026-11-17: prata_h_levi answered [] during the 11-11 run
+    (marked done) and 28 messages minutes later, same range — the gateway
+    returns [] while WhatsApp Web finishes loading the chat. An empty answer
+    must be re-asked, and a source that stays empty must not be marked done."""
+    calls = []
+
+    def _flaky_empty(target, start, end, timeout_seconds=30):
+        calls.append(target)
+        if target == "vazio@c.us":
+            return []
+        # "leandro" answers [] the first time, then the real messages
+        if target == "relevante@c.us" and calls.count("relevante@c.us") == 1:
+            return []
+        return _fake_history(target, start, end)
+
+    monkeypatch.setattr(wpp_module, "history", _flaky_empty)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _fake_classify_and_extract)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+    settings = _fake_settings(_ALL_SOURCES)
+    summary = run(
+        "2026-01-01T00:00:00", "2026-01-02T00:00:00",
+        settings=settings, collection_name=_COLLECTION, qdrant_client=client,
+    )
+    done = json.loads(Path(settings.ingestion_state_path).read_text())
+    key = ["relevante", "2026-01-01T00:00:00", "2026-01-02T00:00:00"]
+    # the late-arriving source WAS recovered and processed
+    assert summary.messages_read == 5   # relevante(2) + misto(2) + pessoal(1)
+    assert summary.contexts_indexed >= 1
+    assert key in done
+    # a source that stayed empty through every confirmation round is a
+    # genuinely quiet chat -> keeps its normal done marker (otherwise the
+    # many permanently silent sources get re-fetched every night forever)
+    assert ["vazio", "2026-01-01T00:00:00", "2026-01-02T00:00:00"] in done
+    # and the late history was asked again, not accepted on the first []
+    assert calls.count("relevante@c.us") >= 2
+
+def test_failed_unit_still_persists_its_message_text(client, monkeypatch):
+    """A unit whose LLM call fails used to leave NOTHING behind — no
+    summary, no text. The text is the expensive part to lose (re-reading the
+    chat + re-embedding), so it is written with context_id=None, like a
+    guardrail-discarded unit: searchable, just not linked to a summary."""
+    def _boom(unit_text):
+        raise RuntimeError("9router timeout after 90s: timed out")
+
+    monkeypatch.setattr(wpp_module, "history", _fake_history)
+    monkeypatch.setattr(inference_module, "classify_and_extract", _boom)
+    monkeypatch.setattr(inference_module, "embed", _fake_embed)
+    settings = _fake_settings(_ALL_SOURCES)
+    summary = run(
+        "2026-01-01T00:00:00", "2026-01-02T00:00:00",
+        settings=settings, collection_name=_COLLECTION, qdrant_client=client,
+    )
+    assert summary.errors > 0
+    assert summary.contexts_indexed == 0        # no summary was produced
+    assert summary.messages_indexed > 0         # but the text was kept
+    points = client.scroll(
+        messages_collection_for(_COLLECTION), limit=100, with_payload=["context_id"]
+    )[0]
+    assert points, "messages must survive a failed summary"
+    assert all(p.payload.get("context_id") is None for p in points)

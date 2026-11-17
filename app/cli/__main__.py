@@ -9,8 +9,10 @@ out of this round).
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from rich.console import Group
 from rich.live import Live
@@ -21,10 +23,36 @@ from rich.table import Table
 from app.config import Settings
 from app.services import ingestion
 from app.services import search as search_service
+from app.services.ingestion import IngestionSummary
 
 _GREEN, _YELLOW, _RED, _BLUE, _DIM = "#8ec07c", "#d79921", "#fb4934", "#83a598", "#5a5a5a"
 _SPARK = "▁▂▃▄▅▆▇█"
 _KIND = {True: ("👥", "#d3869b", "grupo"), False: ("👤", _BLUE, "dm")}  # is_group -> (icone, cor, rotulo)
+
+
+def _days(start: date, end: date) -> list[date]:
+    """[start, end) split into calendar days (end exclusive)."""
+    out: list[date] = []
+    day = start
+    while day < end:
+        out.append(day)
+        day += timedelta(days=1)
+    return out
+
+
+def _accumulate(total: IngestionSummary, summary: IngestionSummary) -> None:
+    """Fold one day's summary into the window total."""
+    total.run_id = summary.run_id
+    total.messages_read += summary.messages_read
+    total.prefilter_discarded += summary.prefilter_discarded
+    total.guardrail_discarded += summary.guardrail_discarded
+    total.contexts_indexed += summary.contexts_indexed
+    total.images_processed += summary.images_processed
+    total.audio_processed += summary.audio_processed
+    total.videos_processed += summary.videos_processed
+    total.messages_indexed += summary.messages_indexed
+    total.errors += summary.errors
+    total.duration_seconds += summary.duration_seconds
 
 
 class _ProgressState:
@@ -46,6 +74,7 @@ class _ProgressState:
         self.spark: list[float] = [0.0] * 40
         self.events: list[tuple[str, str, str]] = []  # (hora, ação colorida, contato)
         self.current_alias: str | None = None
+        self.current_day: str | None = None  # day being ingested (window mode)
 
     _UNIT_TAG = {
         "prefilter_discard": (_DIM, "pré-filtro"),
@@ -89,7 +118,10 @@ class _ProgressState:
             self._log(_YELLOW, "lendo", alias, is_group)
         else:
             n = summary.messages_read - self.source_start_lidas.get(alias, summary.messages_read)
-            self.source_msgs[alias] = n
+            # += : a window runs one day at a time and the same alias shows
+            # up once per day — the breakdown is the window's total per
+            # source, not the last day's.
+            self.source_msgs[alias] = self.source_msgs.get(alias, 0) + n
             self._log(_GREEN, f"lida ({n} msg)", alias, is_group)
         return rate
 
@@ -100,8 +132,18 @@ def _bar(value: int, maximum: int, width: int, color: str) -> str:
 
 
 def _sparkline(samples: list[float]) -> str:
-    peak = max(samples) or 1
-    return "".join(_SPARK[min(len(_SPARK) - 1, int(v / peak * (len(_SPARK) - 1)))] for v in samples)
+    # `peak = max(samples) or 1` keeps a zero-peak window from dividing by
+    # zero, but a NEGATIVE delta (messages_read can't decrease, yet a
+    # per-day summary can start lower than the window total) makes
+    # `v / peak` negative -> int() -> negative index -> IndexError, which
+    # CRASHED the whole ingest run mid-flight (2026-11-17, catch-up
+    # window). A rendering bug must never kill the night: clamp the ratio.
+    peak = max(samples) if samples else 1
+    peak = peak or 1
+    last = len(_SPARK) - 1
+    return "".join(
+        _SPARK[min(last, max(0, int(v / peak * last)))] for v in samples
+    )
 
 
 def _render_progress(index: int, total: int, phase: str, summary, state: _ProgressState) -> Panel:
@@ -206,16 +248,18 @@ def _render_progress(index: int, total: int, phase: str, summary, state: _Progre
 
     return Panel(
         Group(header, stats, columns),
-        title=f"[bold]wpp-context ingest[/]  [{index}/{total}]",
+        title=(
+            f"[bold]wpp-context ingest[/]  [{index}/{total}]"
+            + (f"  ·  {state.current_day}" if state.current_day else "")
+        ),
         subtitle=datetime.now().strftime("%H:%M:%S"),
         border_style="blue",
         expand=True,
     )
 
 
-def _iso_date(value: str) -> str:
-    date.fromisoformat(value)  # raises ValueError on bad format
-    return value
+def _iso_date(value: str) -> date:
+    return date.fromisoformat(value)  # raises ValueError on bad format
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -250,22 +294,50 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
+    # Unattended runs (cron at 3am) are diagnosed from this stdout, which the
+    # wrapper appends to ~/Library/Logs/wpp-context-ingest.log. Without a
+    # config the level is WARNING and the operational evidence — late_history
+    # (an empty answer that was a lie), status=processed/skipped — never
+    # reaches the file.
+    logging.basicConfig(
+        level=os.environ.get("WPP_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     if args.command == "ingest":
         sources = Settings().sources()
         state = _ProgressState(sources, len(sources))
+        days = _days(args.start, args.end)
+        total = IngestionSummary(run_id="")
         with Live(refresh_per_second=4) as live:
             def on_progress(phase, i, t, src, s):
                 state.tick(phase, i, src, s)
                 live.update(_render_progress(i, t, phase, s, state))
 
-            summary = ingestion.run(
-                f"{args.start}T00:00:00", f"{args.end}T00:00:00",
-                on_progress=on_progress,
-            )
+            for day in days:
+                # One run per calendar day: the ingestion state is keyed by
+                # (alias, day-start, day-end), so a night that missed a day
+                # (dead session, crash) leaves that day unmarked and the
+                # NEXT night reprocesses exactly what failed — the rest is
+                # skipped without a single API call.
+                state.current_day = day.isoformat()
+                summary = ingestion.run(
+                    f"{day}T00:00:00", f"{day + timedelta(days=1)}T00:00:00",
+                    on_progress=on_progress,
+                )
+                _accumulate(total, summary)
+        # Blank line first: Rich's Live panel render does NOT end with a
+        # newline when stdout isn't a TTY (the cron wrapper pipes it), so
+        # without this the machine-readable summary lands glued to the
+        # panel's closing border ("╯ingest: range ...") and the notify
+        # wrapper's `grep '^ingest: range'` never matches — 12 daily
+        # reports said "0 msgs lidas · 0 indexadas" on runs that read 268
+        # msgs and indexed 53 units (2026-11-17).
+        print()
         print(
-            f"ingest: range {args.start}..{args.end} run_id={summary.run_id} "
-            f"messages_read={summary.messages_read} "
-            f"contexts_indexed={summary.contexts_indexed} errors={summary.errors}"
+            f"ingest: range {args.start}..{args.end} run_id={total.run_id} "
+            f"messages_read={total.messages_read} "
+            f"contexts_indexed={total.contexts_indexed} errors={total.errors}"
         )
         print("total por contato (só esta execução):")
         for src in sources:

@@ -72,7 +72,9 @@ def test_get_source_returns_chat_messages_and_media(qdrant):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["chat"] == {"id": "1203@g.us"}
+    # `name` = Settings.chat_name(chat_id); None here because the fixture
+    # chat isn't in the allowlist
+    assert body["chat"]["id"] == "1203@g.us"
     assert body["messages"] == [{"message_id": "false_1"}, {"message_id": "false_2"}]
     assert body["media"] == [{"message_id": "false_1", "fetch_url": "/api/v1/source/media/false_1"}]
 

@@ -53,6 +53,12 @@ class IngestionSummary:
 
 _ARTIFACT_TAG = {"image": "[imagem]", "audio": "[audio]", "video": "[video]"}
 
+# History fetch resilience (unattended 3am run): a source that fails is
+# retried in up to _HISTORY_ROUNDS rounds; between rounds the WhatsApp
+# session is re-healed once (a dropped session fails every source at once).
+_HISTORY_ROUNDS = 3
+_HISTORY_RETRY_BACKOFF_SECONDS = 10
+
 def _load_done(path: Path) -> set[tuple[str, str, str]]:
     """(alias, start, end) tuples already fully processed by a prior run() —
     lets a rerun over the same range skip sources it already did instead of
@@ -174,6 +180,146 @@ def _write_messages(
     qdrant.upsert_messages(points, collection_name=collection_name, client=client)
     return len(points)
 
+_EMPTY_CONFIRM_ROUNDS = 3
+_EMPTY_CONFIRM_BACKOFF_SECONDS = 20
+
+
+def _confirm_empty(
+    sources: list[dict], cache: dict[str, list[dict]], start: str, end: str
+) -> None:
+    """Empty history is NOT proof of a quiet day.
+
+    Measured 2026-11-17: prata_h_levi answered `[]` during the 11-11 catch-up
+    run (and the source got marked done), then answered 28 messages on 15
+    consecutive calls minutes later — same range, same session. The gateway
+    returns `[]` with HTTP 200 while WhatsApp Web hasn't finished loading the
+    chat's history. Marking that as "processed" is how a whole day vanishes
+    while the report says success.
+
+    So an empty answer is re-asked a few times, spaced out (~2 min total),
+    before being believed. Late-arriving histories land in `cache` and get
+    processed normally. A source that stays empty through every round is a
+    genuinely quiet chat — it keeps its normal "done" marker, otherwise the
+    many permanently silent sources would be re-fetched on every night of
+    the catch-up window forever."""
+    suspects = [s for s in sources if not cache.get(s["alias"])]
+    for attempt in range(_EMPTY_CONFIRM_ROUNDS):
+        if not suspects:
+            return
+        # Only pay the backoff when there is something to re-ask — a night
+        # where every chat answered on the first call must not sit idle for
+        # 2 minutes before starting work.
+        time.sleep(_EMPTY_CONFIRM_BACKOFF_SECONDS * (attempt + 1))
+        still: list[dict] = []
+        for source in suspects:
+            try:
+                messages = wpp.history(source["jid"], start, end)
+            except wpp.WppChatNotFoundError:
+                continue  # permanent, already classified as bad_jid
+            except Exception as exc:
+                logger.warning(
+                    "source %s status=failed_empty_confirm round=%d error=%s",
+                    source["alias"], attempt + 1, exc,
+                )
+                still.append(source)
+                continue
+            if messages:
+                logger.info(
+                    "source %s status=late_history n=%d (empty was a lie)",
+                    source["alias"], len(messages),
+                )
+                cache[source["alias"]] = messages
+            else:
+                still.append(source)
+        suspects = still
+
+
+def _fetch_histories(
+    sources: list[dict],
+    start: str,
+    end: str,
+    summary: IngestionSummary,
+) -> tuple[dict[str, list[dict]], set[str]]:
+    """Fetch every source's history, isolating per-source failures.
+
+    This run happens unattended at 3am: one broken chat — or a WhatsApp
+    session that dropped mid-run — must not kill the whole night. A source
+    that still fails after the rounds is counted in `errors` and stays OUT of
+    the done-markers, so the next run (catch-up window covers the missed
+    day) picks it up instead of losing it silently. Between rounds the
+    session is re-healed once: a dropped session is the most common cause of
+    a burst of simultaneous failures."""
+    cache: dict[str, list[dict]] = {}
+    permanent: set[str] = set()  # bad JID — retrying can't help
+    for attempt in range(_HISTORY_ROUNDS):
+        todo = [s for s in sources if s["alias"] not in cache and s["alias"] not in permanent]
+        if not todo:
+            break
+        for source in todo:
+            try:
+                cache[source["alias"]] = wpp.history(source["jid"], start, end)
+            except wpp.WppChatNotFoundError as exc:
+                permanent.add(source["alias"])
+                logger.warning("source %s status=bad_jid error=%s", source["alias"], exc)
+            except Exception as exc:
+                logger.warning(
+                    "source %s status=failed_history round=%d error=%s",
+                    source["alias"], attempt + 1, exc,
+                )
+        if todo and attempt < _HISTORY_ROUNDS - 1:
+            wpp.ensure_session()  # session dropped mid-run? heal before retrying
+            time.sleep(_HISTORY_RETRY_BACKOFF_SECONDS * (attempt + 1))
+
+    failed: set[str] = set()
+    for source in sources:
+        if source["alias"] in cache:
+            continue
+        failed.add(source["alias"])
+        cache[source["alias"]] = []
+        if source["alias"] not in permanent:  # bad_jid already logged as the cause
+            summary.errors += 1
+
+    # Empty answers are re-asked before being trusted (see _confirm_empty).
+    _confirm_empty(
+        [s for s in sources if s["alias"] not in permanent], cache, start, end
+    )
+    # A source that failed the fetch rounds but answered inside the empty-
+    # confirmation rounds is healthy after all — don't leave it unmarked.
+    for source in sources:
+        if source["alias"] in failed and cache.get(source["alias"]):
+            failed.discard(source["alias"])
+    return cache, failed
+
+
+def _persist_text_only(
+    unit: ContextUnit,
+    messages_by_id: dict[str, MessageEnvelope],
+    media_text: dict[str, str],
+    collection_name: str,
+    client,
+    summary: IngestionSummary,
+) -> None:
+    """Persist a unit's messages even though its SUMMARY failed.
+
+    A unit whose LLM call times out used to leave nothing behind: no summary,
+    no message text. The text is the expensive part to lose — recovering it
+    means re-reading the chat and re-running the embedding — so the messages
+    are written with context_id=None (the same shape as a guardrail-discarded
+    unit): searchable in the messages layer, not linked to any summary.
+
+    The unit stays unmarked, so the next window retries it and, when the LLM
+    cooperates, the summary lands and `backfill-messages` links the text to
+    it. Losing the summary is recoverable; losing the text is not."""
+    try:
+        summary.messages_indexed += _write_messages(
+            unit, messages_by_id, media_text, None,
+            collection_name=collection_name, client=client,
+        )
+    except Exception as exc:
+        logger.warning("unit %s status=failed_text_only error=%s", unit.id, exc)
+        summary.errors += 1
+
+
 def run(
     start: str,
     end: str,
@@ -200,7 +346,11 @@ def run(
     messages_collection = qdrant.messages_collection_for(collection_name)
     started = time.monotonic()
 
-    wpp.ensure_session()  # self-heal a dropped WhatsApp session (PRD: unattended run)
+    if not wpp.ensure_session():  # self-heal a dropped WhatsApp session (PRD: unattended run)
+        # Not fatal: the run continues (it runs unattended at 3am), but every
+        # fetch will fail loudly and be counted, and the failed sources stay
+        # unmarked so the next night's catch-up window picks them up.
+        logger.warning("whatsapp session not healthy before the run")
 
     all_sources = settings.sources()
     done_ranges = _load_done(settings.ingestion_state_path)
@@ -211,7 +361,7 @@ def run(
     # and process the lightest ones first, so the run racks up done sources
     # fast and saves the slow/heavy ones (more units -> more LLM calls) for
     # last, instead of stalling on whichever alias happens to sort first.
-    history_cache = {s["alias"]: wpp.history(s["jid"], start, end) for s in pending}
+    history_cache, failed_sources = _fetch_histories(pending, start, end, summary)
     pending.sort(key=lambda s: len(history_cache[s["alias"]]))
     sources = skipped + pending
 
@@ -228,7 +378,10 @@ def run(
         raw_messages = history_cache[source["alias"]]
         summary.messages_read += len(raw_messages)
         if not raw_messages:
-            _mark_done(settings.ingestion_state_path, state_key)
+            # A source whose fetch FAILED stays unmarked: the next run of
+            # this range must try it again (it's a hole, not an empty day).
+            if source["alias"] not in failed_sources:
+                _mark_done(settings.ingestion_state_path, state_key)
             if on_progress:
                 on_progress("done", index, len(sources), source, summary)
             continue  # zero messages in period -> no further calls, no writes
@@ -271,6 +424,9 @@ def run(
             except Exception as exc:
                 logger.warning("unit %s status=failed_media error=%s", unit.id, exc)
                 summary.errors += 1
+                _persist_text_only(
+                    unit, messages_by_id, {}, messages_collection, qdrant_client, summary
+                )
                 if on_progress:
                     on_progress("unit_error", index, len(sources), source, summary)
                 continue
@@ -282,6 +438,9 @@ def run(
             except Exception as exc:
                 logger.warning("unit %s status=failed_guardrail error=%s", unit.id, exc)
                 summary.errors += 1
+                _persist_text_only(
+                    unit, messages_by_id, media_text, messages_collection, qdrant_client, summary
+                )
                 if on_progress:
                     on_progress("unit_error", index, len(sources), source, summary)
                 continue
@@ -326,7 +485,7 @@ def run(
             if on_progress:
                 on_progress("indexed", index, len(sources), source, summary)
 
-        if summary.errors == errors_before:
+        if summary.errors == errors_before and source["alias"] not in failed_sources:
             _mark_done(settings.ingestion_state_path, state_key)  # only skip-worthy if fully clean
         if on_progress:
             on_progress("done", index, len(sources), source, summary)

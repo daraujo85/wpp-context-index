@@ -125,12 +125,38 @@ opcionais; `"expand": true` anexa as mensagens de cada resumo e
 ## Agendamento (ingestão diária via cron do host)
 
 PRD §18 proíbe Celery/Redis/scheduler novo. A ingestão diária roda via
-cron do host chamando `scripts/ingest-yesterday.sh`, que calcula a janela
-"ontem 00:00 até hoje 00:00" (fuso local) e invoca a CLI `ingest` (T7)
-sem modificá-la.
+cron do host chamando `scripts/wpp-context-ingest-notify.sh`, que:
 
-Exemplo de linha de crontab (roda às 03:00, por sugestão do PRD §18):
+1. roda a ingestão (`scripts/ingest-yesterday.sh`) numa **janela de catch-up**
+   (default 7 dias, `INGEST_LOOKBACK_DAYS`), um dia por vez;
+2. publica o resultado no WhatsApp (contagens, quebra por grupo/contato e os
+   títulos dos resumos do dia).
 
 ```cron
-0 3 * * * cd /caminho/para/wpp-context-index && ./scripts/ingest-yesterday.sh >> /var/log/wpp-context-ingest.log 2>&1
+0 3 * * * /caminho/para/wpp-context-index/scripts/wpp-context-ingest-notify.sh >> ~/Library/Logs/wpp-context-ingest.log 2>&1
 ```
+
+### Resiliência (roda às 3h, sem supervisão)
+
+Cada falha silenciosa custa um dia de histórico. Por isso:
+
+| Situação | Comportamento |
+|---|---|
+| Sessão do WhatsApp caída | `bot-off`/`bot-on` automático; se não voltar, o run **continua** e as fontes falham de forma visível |
+| Falha ao ler um chat | 3 rodadas de retry com backoff, com re-heal da sessão entre elas; a fonte fica **sem** marcação de "done" |
+| `chat_not_found` (JID errado) | 1 tentativa só — é permanente, não polui a contagem de erros |
+| Histórico vazio | re-perguntado 3× (~2 min) antes de ser acreditado: o gateway devolve `[]` com HTTP 200 enquanto o WhatsApp Web carrega o chat |
+| Dia que falhou | fica sem marcação → a janela de catch-up da noite seguinte reprocessa **só** esse dia |
+
+O estado de "done" é por `(alias, dia)` em `.data/ingested.json`. A CLI divide
+a janela em runs de um dia, então dias já completos são pulados sem nenhuma
+chamada de API. Rodar à mão um dia específico:
+
+```bash
+INGEST_START=2026-11-11 INGEST_END=2026-11-12 ./scripts/ingest-yesterday.sh
+```
+
+> O relatório diário é lido do stdout da CLI. A CLI imprime o resumo
+> (`ingest: range ... messages_read=N ...`) numa linha própria, porque o painel
+> do Rich não termina em newline quando o stdout não é TTY — sem isso o resumo
+> cola na borda do painel e todo relatório sai como "0 msgs lidas".
