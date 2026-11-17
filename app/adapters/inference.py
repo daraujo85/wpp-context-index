@@ -27,6 +27,11 @@ DEFAULT_TIMEOUT_SECONDS = 400  # generoso p/ cold-load do embedding local (Ollam
 # Timeout próprio e curto, com override por env.
 LLM_TIMEOUT_SECONDS = int(os.environ.get("NINE_ROUTER_TIMEOUT_SECONDS", "90"))
 _RETRY_DELAY_SECONDS = 2  # one retry, transient transport errors only — not malformed responses
+# A bad COMBO answers 502/503/504 (the gateway is up, the combo is sick) and
+# recovers within minutes — measured 2026-11-17. Two attempts were not
+# enough: 21 of the window's 29 errors were that. Now the guardrail unit
+# waits it out (2s + 4s + 6s + 8s + 10s) before giving up.
+_MAX_ATTEMPTS = 5
 
 _VISION_PROMPT = """Descreva esta imagem de forma objetiva, para indexação e busca
 em um índice corporativo. Não faça descrição artística. Foque em:
@@ -129,7 +134,7 @@ def _post_9router(content, timeout_seconds: int) -> str:
             "Authorization": f"Bearer {_NINE_ROUTER_TOKEN}",
         },
     )
-    for attempt in (1, 2):
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout_seconds) as resp:
                 raw = resp.read().decode("utf-8")
@@ -138,10 +143,18 @@ def _post_9router(content, timeout_seconds: int) -> str:
             # Retry de timeout só DOBRA o tempo parado (combo engasgado não
             # volta em 2s). Falha rápido: o unit vira erro e a ingestão segue.
             raise InferenceError(f"9router timeout after {timeout_seconds}s: {exc}") from exc
-        except urllib.error.URLError as exc:
-            if attempt == 2:
+        except urllib.error.HTTPError as exc:
+            # 502/503/504 = o gateway está de pé mas o COMBO está ruim
+            # (medido 2026-11-17: 6/6 chamadas pro combo `wpp-context`
+            # deram 502, enquanto os modelos individuais respondiam). Vale
+            # insistir com backoff: o combo costuma se recuperar em minutos.
+            if exc.code not in (502, 503, 504) or attempt == _MAX_ATTEMPTS:
                 raise InferenceError(f"9router call failed: {exc}") from exc
-            time.sleep(_RETRY_DELAY_SECONDS)
+            time.sleep(_RETRY_DELAY_SECONDS * attempt)
+        except urllib.error.URLError as exc:
+            if attempt == _MAX_ATTEMPTS:
+                raise InferenceError(f"9router call failed: {exc}") from exc
+            time.sleep(_RETRY_DELAY_SECONDS * attempt)
     text = ""
     for line in raw.splitlines():
         if not line.startswith("data: "):

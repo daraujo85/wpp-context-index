@@ -44,7 +44,8 @@ services:
   qdrant:
     image: qdrant/qdrant
     ports:
-      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6333:6333"  # REST
+      - "127.0.0.1:6334:6334"  # gRPC — grepai (hawtor-main) fala com o Qdrant por aqui
     volumes:
       - qdrant-storage:/qdrant/storage
 
